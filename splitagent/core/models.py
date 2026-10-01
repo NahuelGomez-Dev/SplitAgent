@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, ClassVar
 
 SEVERITIES = ("critical", "high", "medium", "low", "info")
 
@@ -160,27 +160,68 @@ class SessionState:
             counts[normalize_severity(finding.severity, finding.cvss_score)] += 1
         return counts
 
+    SEVERITY_WEIGHTS: ClassVar[dict[str, float]] = {
+        "critical": 10.0,
+        "high": 6.0,
+        "medium": 3.0,
+        "low": 1.0,
+        "info": 0.25,
+    }
+
+    def finding_weight(self, finding: Finding) -> float:
+        severity = normalize_severity(finding.severity, finding.cvss_score)
+        return self.SEVERITY_WEIGHTS.get(severity, 0.25)
+
     def resilience_score(self) -> float:
-        """0-100 score: how much of the discovered attack surface is mitigated."""
+        """0-100: how much of the discovered attack surface is actually closed.
+
+        Only a mitigation that was *re-tested* counts. Proposing a firewall
+        rule changes nothing on the target, so scoring proposals as fixes
+        reports a confident number that is simply untrue - which is worse than
+        reporting nothing, because the operator stops looking.
+        """
         if not self.findings:
             return 100.0
-        weights = {
-            "critical": 10.0,
-            "high": 6.0,
-            "medium": 3.0,
-            "low": 1.0,
-            "info": 0.25,
-        }
         total = 0.0
         covered = 0.0
         for finding in self.findings:
-            weight = weights.get(normalize_severity(finding.severity, finding.cvss_score), 0.25)
+            weight = self.finding_weight(finding)
             total += weight
-            if finding.status in ("mitigated", "accepted"):
+            if self.finding_is_closed(finding):
                 covered += weight
         if total <= 0:
             return 100.0
         return round((covered / total) * 100.0, 1)
+
+    def finding_is_closed(self, finding: Finding) -> bool:
+        """True only when a verified mitigation addresses this finding."""
+        if finding.status in ("false-positive", "accepted"):
+            # Not a real issue, or consciously accepted: not an open risk.
+            return True
+        return any(
+            m.finding_id == finding.id and m.verified and m.status == "verified"
+            for m in self.mitigations
+        )
+
+    def resilience_breakdown(self) -> dict[str, Any]:
+        """The number plus the evidence behind it, for the report and the UI."""
+        proposed = sum(1 for m in self.mitigations if not m.verified)
+        verified = sum(1 for m in self.mitigations if m.verified)
+        open_critical = [
+            f.id
+            for f in self.findings
+            if not self.finding_is_closed(f)
+            and normalize_severity(f.severity, f.cvss_score) == "critical"
+        ]
+        return {
+            "score": self.resilience_score(),
+            "findings_total": len(self.findings),
+            "findings_closed": sum(1 for f in self.findings if self.finding_is_closed(f)),
+            "open_critical": open_critical,
+            "mitigations_proposed": proposed,
+            "mitigations_verified": verified,
+            "verified_is_zero": verified == 0 and bool(self.findings),
+        }
 
     def to_dict(self) -> dict[str, Any]:
         return {

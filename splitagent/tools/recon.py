@@ -73,17 +73,34 @@ async def _probe(host: str, port: int, timeout: float) -> dict[str, Any] | None:
     }
 
 
+# Ports a full sweep covers when the target is a host rather than a web app.
+# A pentester does not guess: the whole range is checked, cheaply, in batches.
+FULL_TCP_RANGE = range(1, 65536)
+
+
 async def tcp_scan(
     ctx: ToolContext,
     host: str = "",
     ports: list[int] | None = None,
     timeout: float = 0.8,
-    concurrency: int = 128,
+    concurrency: int = 512,
+    full: bool = False,
 ) -> dict[str, Any]:
+    """TCP connect scan.
+
+    ``full=True`` sweeps every port. Anything less leaves services the agent
+    never sees, which is exactly how a lab target keeps a root shell on 6200
+    or an IRC backdoor on 6667 undiscovered.
+    """
     host = host or (ctx.target.effective_hosts() or ["localhost"])[0]
     ctx.check_scope(host)
-    port_list = ports or ctx.target.ports or DEFAULT_PORTS
-    port_list = [int(p) for p in port_list][:2000]
+    if full and not ports:
+        port_list = list(FULL_TCP_RANGE)
+        # A full sweep deserves more patience per port.
+        timeout = min(timeout, 0.35)
+    else:
+        port_list = ports or ctx.target.ports or DEFAULT_PORTS
+    port_list = [int(p) for p in port_list][:65535]
     semaphore = asyncio.Semaphore(concurrency)
 
     async def worker(port: int) -> dict[str, Any] | None:
@@ -98,6 +115,7 @@ async def tcp_scan(
         "scanned": len(port_list),
         "open": open_ports,
         "count": len(open_ports),
+        "full": full,
     }
 
 
@@ -112,8 +130,10 @@ def dns_lookup(host: str = "") -> dict[str, Any]:
 
 
 def red_recon_tools(ctx: ToolContext) -> list[Tool]:
-    async def _scan(host: str = "", ports: list[int] | None = None) -> dict[str, Any]:
-        return await tcp_scan(ctx, host=host, ports=ports)
+    async def _scan(
+        host: str = "", ports: list[int] | None = None, full: bool = False
+    ) -> dict[str, Any]:
+        return await tcp_scan(ctx, host=host, ports=ports, full=full)
 
     return [
         Tool(
@@ -133,7 +153,12 @@ def red_recon_tools(ctx: ToolContext) -> list[Tool]:
             name="port_scan",
             description=(
                 "TCP connect scan against the authorised target. Returns open "
-                "ports with service guesses and captured banners."
+                "ports with service guesses and captured banners. Set "
+                "`full=true` to sweep all 65535 ports: do this before "
+                "concluding, because most interesting services hide on "
+                "non-standard ports (backdoors on 6200, IRC on 6667, NFS on "
+                "2049). Scanning only the common ports is how a root shell "
+                "goes unnoticed."
             ),
             parameters={
                 "type": "object",
@@ -143,6 +168,11 @@ def red_recon_tools(ctx: ToolContext) -> list[Tool]:
                         "type": "array",
                         "items": {"type": "integer"},
                         "description": "Explicit port list; defaults to common ports.",
+                    },
+                    "full": {
+                        "type": "boolean",
+                        "description": "Sweep every TCP port 1-65535.",
+                        "default": False,
                     },
                 },
             },

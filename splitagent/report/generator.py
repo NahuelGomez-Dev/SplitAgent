@@ -57,13 +57,40 @@ def build_markdown(state: SessionState, settings: ReportSettings) -> str:
     lines.append("")
     lines.append("## Executive summary")
     lines.append("")
+    breakdown = state.resilience_breakdown()
     lines.append(
         f"The audit surfaced **{len(state.findings)} findings** and "
         f"**{len(state.mitigations)} mitigations**. Severity distribution: "
         f"{', '.join(_severity_rank(state))}. "
-        f"Resilience score: **{state.resilience_score()}/100**."
+        f"Resilience score: **{state.resilience_score()}/100** "
+        f"({breakdown['findings_closed']}/{breakdown['findings_total']} issues "
+        "confirmed closed)."
     )
     lines.append("")
+    # Be explicit when nothing has been proven, so a high number is never
+    # mistaken for a fixed system.
+    if breakdown["verified_is_zero"]:
+        lines.append(
+            "> **Nothing is verified yet.** Every mitigation below is a proposal. "
+            "The score counts only issues re-tested after a control was applied, "
+            "so it will not move until the fixes are actually deployed and the "
+            "audit is re-run."
+        )
+        lines.append("")
+    elif breakdown["mitigations_proposed"]:
+        lines.append(
+            f"> {breakdown['mitigations_verified']} control(s) verified as applied; "
+            f"{breakdown['mitigations_proposed']} still only proposed and not "
+            "counted in the score."
+        )
+        lines.append("")
+    if breakdown["open_critical"]:
+        lines.append(
+            "**Open critical issues:** "
+            + ", ".join(f"`{fid}`" for fid in breakdown["open_critical"])
+            + ". These are unmitigated and should be treated as urgent."
+        )
+        lines.append("")
     if state.usage:
         lines.append("Model usage: " + ", ".join(f"{k}={v}" for k, v in state.usage.items()) + ".")
         lines.append("")
@@ -150,6 +177,7 @@ def build_json(state: SessionState) -> str:
     payload: dict[str, Any] = state.to_dict()
     payload["metrics"] = {
         "resilience_score": state.resilience_score(),
+        "resilience": state.resilience_breakdown(),
         "severity_counts": state.severity_counts(),
         "finding_count": len(state.findings),
         "mitigation_count": len(state.mitigations),

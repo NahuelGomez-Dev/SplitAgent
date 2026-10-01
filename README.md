@@ -741,8 +741,12 @@ clean up:
 | --- | --- | --- |
 | `validate_vsftpd_backdoor` | CVE-2011-2523 | Sends the `:)` trigger and checks whether TCP/6200 opens. Runs nothing on the shell. |
 | `validate_root_shell` | Unauthenticated shell | Reads the prompt (`root@host:/#`), disconnects. |
-| `validate_samba_usermap` | CVE-2007-2447 | Passes an `echo` canary through the username and looks for it in the reply. |
+| `validate_samba_usermap` | CVE-2007-2447 | Sends the username payload, or asks `nmap` when a toolbox is available. |
 | `validate_mysql_blank_password` | Exposed database | Parses the handshake version, returns the exact confirming command. |
+| `validate_unrealircd_backdoor` | CVE-2010-2075 | Sends the `AB` token to the IRC daemon. |
+| `validate_vnc_no_auth` | Exposed VNC | Reads the RFB handshake; no session is opened. |
+| `validate_nfs_export` | World-readable NFS | Runs `showmount -e` for the real export list. |
+| `validate_proftpd` | ProFTPD (incl. 2121) | Matches the banner to the product, so a vsftpd port is not mislabelled. |
 | `validate_open_shell_port` | Any unauthenticated shell | Banner check with no command execution. |
 
 Every one reports `validated: true/false` with raw evidence, and refuses to
@@ -750,14 +754,33 @@ claim success when it cannot observe the effect. Verified against a live
 Metasploitable 2:
 
 ```text
-1524 root shell  -> validated: True   confidence: high
-                    evidence: returned a root shell prompt 'root@target:/#'
-MySQL 3306       -> validated: True   version: 5.0.51a-3ubuntu5
-vsftpd (port not reachable)
-                 -> validated: False  "backdoor port stayed closed"
+1524 root shell   -> validated: True   'root@metasploitable:/#'
+vsftpd backdoor   -> validated: True   trigger opened TCP/6200 (root shell)
+proftpd 2121      -> validated: True   'ProFTPD 1.3.1 Server (Debian)'
+proftpd on 21     -> validated: False  'runs a different FTP daemon (vsFTPd)'
+nfs export        -> validated: False  'no exports: NFS is exposing nothing'
 ```
 
+Two rules the validators follow:
+
+- **A missing tool is not a finding.** If `showmount` is unavailable the result
+  says so and explicitly instructs the model not to record it, instead of
+  parsing the error as a world-readable export.
+- **The product must match.** A vsftpd banner is never reported as a ProFTPD
+  finding.
+
 Findings carry `confidence: high` only when a validator confirmed them.
+
+### Sweep every port
+
+A curated port list is how a backdoor on 6200, an IRC trojan on 6667 or an NFS
+export on 2049 stays hidden. `port_scan` therefore supports a full sweep:
+
+```text
+port_scan  {"host": "<target>", "full": true}
+```
+
+All 65535 ports in about 45 seconds, then validated one by one.
 
 ### Resilience
 
@@ -847,9 +870,31 @@ Each session produces:
 - **JSON** — machine-readable, including metrics and the full session state.
 
 Findings carry a CVSS v3.1 vector and score, evidence, confidence, the round
-they were discovered in, and the mitigations that address them. A **resilience
-score** (0–100) summarises how much of the discovered attack surface has been
-mitigated.
+they were discovered in, and the mitigations that address them.
+
+### The resilience score tells the truth
+
+The score counts **only findings whose mitigation was re-tested** by
+`verify_control` and confirmed to hold:
+
+| State | Score |
+| --- | --- |
+| Finding with no mitigation | 0 |
+| Mitigation written but never applied | **0** |
+| `verify_control` on an unpatched target | **0**, `still_exploitable: true` |
+| Fix applied and confirmed by re-test | counted |
+
+Proposing a firewall rule changes nothing on the target, so scoring proposals
+as fixes reports a confident number that is untrue — which is worse than
+reporting nothing, because the operator stops looking. When nothing has been
+verified the report says so in as many words:
+
+> **Nothing is verified yet.** Every mitigation below is a proposal. The score
+> counts only issues re-tested after a control was applied, so it will not move
+> until the fixes are actually deployed and the audit is re-run.
+
+A lab target with no operator applying patches therefore scores **0**, which is
+correct: every hole is still open.
 
 ---
 

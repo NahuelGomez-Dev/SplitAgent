@@ -201,12 +201,63 @@ async def test_todo_list(isolated_home, tmp_path):
     assert len(loaded.state.todos) == 3
 
 
-async def test_resilience_score(isolated_home, tmp_path):
+async def test_resilience_score_counts_only_verified_fixes(isolated_home, tmp_path):
+    """A proposed mitigation changes nothing on the target.
+
+    Scoring proposals as fixes reports a confident number that is untrue, so
+    only a re-tested control may move the score.
+    """
     ctx = SharedContext.create(target="t", bus=EventBus(), directory=tmp_path / "sessions")
     assert ctx.state.resilience_score() == 100.0
+
     await ctx.add_finding({"title": "a", "severity": "critical"})
     await ctx.add_finding({"title": "b", "severity": "low"})
     assert ctx.state.resilience_score() == 0.0
+
     finding = ctx.state.findings[0]
-    await ctx.add_mitigation({"finding_id": finding.id, "title": "fix"})
+    await ctx.add_mitigation({"finding_id": finding.id, "title": "proposed rule"})
+    # Still zero: nothing has been proven to work.
+    assert ctx.state.resilience_score() == 0.0
+
+    # Marking it verified is what moves the number.
+    for mitigation in ctx.state.mitigations:
+        mitigation.verified = True
+        mitigation.status = "verified"
     assert ctx.state.resilience_score() > 0.0
+    assert finding.id in [f.id for f in ctx.state.findings]
+    assert ctx.state.finding_is_closed(finding) is True
+
+
+async def test_resilience_breakdown_reports_the_gap(isolated_home, tmp_path):
+    ctx = SharedContext.create(target="t", bus=EventBus(), directory=tmp_path / "sessions")
+    finding = await ctx.add_finding({"title": "crit", "severity": "critical"})
+    await ctx.add_mitigation({"finding_id": finding.id, "title": "a rule"})
+    await ctx.add_mitigation({"finding_id": finding.id, "title": "another rule"})
+
+    breakdown = ctx.state.resilience_breakdown()
+    assert breakdown["findings_closed"] == 0
+    assert breakdown["mitigations_proposed"] == 2
+    assert breakdown["mitigations_verified"] == 0
+    assert breakdown["verified_is_zero"] is True
+    assert finding.id in breakdown["open_critical"]
+
+
+async def test_false_positive_is_not_an_open_risk(isolated_home, tmp_path):
+    ctx = SharedContext.create(target="t", bus=EventBus(), directory=tmp_path / "sessions")
+    finding = await ctx.add_finding({"title": "not real", "severity": "critical"})
+    finding.status = "false-positive"
+    assert ctx.state.resilience_score() == 100.0
+
+
+async def test_verification_only_closes_its_own_finding(isolated_home, tmp_path):
+    from splitagent.core.models import Mitigation
+
+    ctx = SharedContext.create(target="t", bus=EventBus(), directory=tmp_path / "sessions")
+    first = await ctx.add_finding({"title": "one", "severity": "critical"})
+    second = await ctx.add_finding({"title": "two", "severity": "critical"})
+    ctx.state.mitigations.append(
+        Mitigation(finding_id=first.id, title="fix", verified=True, status="verified")
+    )
+    assert ctx.state.finding_is_closed(first) is True
+    assert ctx.state.finding_is_closed(second) is False
+    assert ctx.state.resilience_score() == 50.0

@@ -182,31 +182,199 @@ async def _analyze_logs(
     }
 
 
+# Which validator re-proves which finding category. This is what turns a
+# mitigation from "proposed" into "verified": we attack the target again and
+# see whether the hole is actually gone.
+_REPROBE_BY_CATEGORY = {
+    "sql_injection": ("test_sql_injection", "parameter"),
+    "reflected_xss": ("test_xss", "parameter"),
+    "xss": ("test_xss", "parameter"),
+    "path_traversal": ("test_path_traversal", "parameter"),
+    "command_injection": ("test_command_injection", "parameter"),
+    "open_redirect": ("test_open_redirect", "parameter"),
+}
+
+# Categories whose proof is a service state, not an HTTP response.
+_REPROBE_SERVICE = {
+    "unauthenticated_shell": ("validate_root_shell", "port"),
+    "backdoor": ("validate_vsftpd_backdoor", "port"),
+    "database_exposure": ("validate_mysql_blank_password", "port"),
+}
+
+
+def _finding_port(finding: Any) -> int | None:
+    """Pull a port out of an endpoint such as ``tcp/1524`` or ``host:3306``."""
+    import re
+
+    blob = f"{finding.endpoint or ''} {finding.target or ''}"
+    match = re.search(r"(?:tcp|udp)/\s*(\d{2,5})", blob)
+    if match:
+        return int(match.group(1))
+    match = re.search(r":(\d{2,5})\b", blob)
+    return int(match.group(1)) if match else None
+
+
+def _finding_host(finding: Any, ctx: ToolContext) -> str:
+    import re
+    from urllib.parse import urlparse
+
+    blob = f"{finding.endpoint or ''} {finding.target or ''}"
+    url_match = re.search(r"https?://([^/\s:]+)", blob)
+    if url_match:
+        return url_match.group(1)
+    if finding.target and "://" not in finding.target:
+        return finding.target.split()[0].split(":")[0]
+    hosts = ctx.target.effective_hosts()
+    return urlparse(hosts[0] if hosts else "localhost").hostname or "localhost"
+
+
 async def _verify_control(ctx: ToolContext, finding_id: str) -> dict[str, Any]:
+    """Re-attack the target to see whether a mitigation actually closed it.
+
+    This is the difference between a report that says "apply this rule" and one
+    that says "this rule is in place and the hole is gone". Only the second is
+    worth anything to the operator, and only a confirmed re-test counts toward
+    the resilience score.
+    """
     finding = ctx.context.state.get_finding(finding_id)
     if finding is None:
         return {"error": f"finding '{finding_id}' not found"}
+
+    category = (finding.category or "").lower()
+    host = _finding_host(finding, ctx)
+    result: dict[str, Any] = {"test": "re-probe", "category": category}
+
+    # 1. Service-level findings: re-run the matching validator.
+    if category in _REPROBE_SERVICE:
+        from splitagent.tools import validate as validators
+
+        name, _kind = _REPROBE_SERVICE[category]
+        port = _finding_port(finding)
+        validator = getattr(validators, name, None)
+        if validator is not None:
+            try:
+                probe = await validator(ctx, host, *((port,) if port else ()))
+            except Exception as exc:
+                return {"error": f"{type(exc).__name__}: {exc}", "verified": False}
+            # The exploit no longer works -> the control holds.
+            closed = probe.get("validated") is False
+            result.update(
+                {
+                    "verified": closed,
+                    "still_exploitable": probe.get("validated") is True,
+                    "evidence": (
+                        f"Re-ran {name}: "
+                        + (
+                            "the exploit no longer succeeds, the control holds."
+                            if closed
+                            else "the target is STILL vulnerable: "
+                            + str(probe.get("evidence"))[:160]
+                        )
+                    ),
+                }
+            )
+            return _record_verification(ctx, finding_id, result)
+
+    # 2. HTTP-level findings: re-run the injection probe.
+    if category in _REPROBE_BY_CATEGORY:
+        from splitagent.tools import exploit as probes
+
+        name, _arg = _REPROBE_BY_CATEGORY[category]
+        probe_fn = getattr(probes, name, None)
+        parameter = _guessed_parameter(finding)
+        url = finding.endpoint or ctx.target.url
+        if probe_fn is not None and url and parameter:
+            try:
+                probe = await probe_fn(ctx, url, parameter)
+            except Exception as exc:
+                return {"error": f"{type(exc).__name__}: {exc}", "verified": False}
+            closed = probe.get("vulnerable") is False
+            result.update(
+                {
+                    "verified": closed,
+                    "still_exploitable": probe.get("vulnerable") is True,
+                    "evidence": (
+                        f"Re-ran {name} on '{parameter}': "
+                        + (
+                            "no longer exploitable, the control holds."
+                            if closed
+                            else "STILL exploitable: " + str(probe.get("evidence"))[:160]
+                        )
+                    ),
+                }
+            )
+            return _record_verification(ctx, finding_id, result)
+
+    # 3. Header / configuration findings: compare the actual response.
     url = finding.endpoint or ctx.target.url
-    if not url:
-        return {"verified": False, "reason": "finding has no testable endpoint"}
-    ctx.check_scope(url)
-    client = await get_client(follow=False, verify=False, timeout=10.0)
-    response = await client.get(url)
-    headers = {k.lower(): v for k, v in response.headers.items()}
-    if finding.category in ("headers", "misconfiguration"):
-        missing = [h for h in SECURITY_HEADERS if h not in headers]
-        verified = len(missing) < len(SECURITY_HEADERS)
-        return {
-            "verified": verified,
-            "status": response.status_code,
-            "remaining_missing": missing,
-            "evidence": f"{len(SECURITY_HEADERS) - len(missing)}/{len(SECURITY_HEADERS)} security headers present",
-        }
+    if url:
+        ctx.check_scope(url)
+        client = await get_client(follow=False, verify=False, timeout=10.0)
+        response = await client.get(url)
+        headers = {k.lower(): v for k, v in response.headers.items()}
+        if category in ("headers", "misconfiguration"):
+            missing = [h for h in SECURITY_HEADERS if h not in headers]
+            # Half or more of the headers present means the hardening landed.
+            verified = len(missing) < len(SECURITY_HEADERS) // 2
+            result.update(
+                {
+                    "verified": verified,
+                    "status": response.status_code,
+                    "remaining_missing": missing,
+                    "evidence": (
+                        f"{len(SECURITY_HEADERS) - len(missing)}/"
+                        f"{len(SECURITY_HEADERS)} security headers present"
+                    ),
+                }
+            )
+            return _record_verification(ctx, finding_id, result)
+        result.update(
+            {
+                "verified": None,
+                "status": response.status_code,
+                "evidence": (
+                    "The endpoint answers. This category has no automatic re-test; "
+                    "confirm by hand before marking it closed."
+                ),
+            }
+        )
+        return result
+
     return {
         "verified": None,
-        "status": response.status_code,
-        "evidence": "endpoint reachable; manual re-test recommended for this category",
+        "reason": "finding has no testable endpoint",
+        "evidence": "Nothing to re-test: the finding is informational.",
     }
+
+
+def _guessed_parameter(finding: Any) -> str:
+    """Recover the parameter name a web finding was found on."""
+    import re
+
+    blob = f"{finding.endpoint or ''} {finding.evidence or ''}"
+    match = re.search(r"[?&]([A-Za-z_][\w-]{0,30})=", blob)
+    if match:
+        return match.group(1)
+    match = re.search(r"parameter[:\s]+'?([A-Za-z_][\w-]{0,30})", blob, re.IGNORECASE)
+    return match.group(1) if match else ""
+
+
+def _record_verification(
+    ctx: ToolContext, finding_id: str, result: dict[str, Any]
+) -> dict[str, Any]:
+    """Persist the verdict so the resilience score can trust it."""
+    verified = result.get("verified") is True
+    state = ctx.context.state
+    for mitigation in state.mitigations:
+        if mitigation.finding_id != finding_id:
+            continue
+        mitigation.verified = verified
+        mitigation.status = "verified" if verified else "proposed"
+    finding = state.get_finding(finding_id)
+    if finding is not None:
+        finding.status = "mitigated" if verified else "open"
+    ctx.context.save()
+    return result
 
 
 def blue_tools(ctx: ToolContext) -> list[Tool]:
