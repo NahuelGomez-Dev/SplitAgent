@@ -1,0 +1,315 @@
+"""Compile a session into professional audit reports (Markdown/HTML/JSON)."""
+
+from __future__ import annotations
+
+import html
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from splitagent.config import ReportSettings
+from splitagent.core.models import SEVERITY_ORDER, SessionState
+from splitagent.report.cvss import describe
+
+SEVERITY_BADGE = {
+    "critical": "CRITICAL",
+    "high": "HIGH",
+    "medium": "MEDIUM",
+    "low": "LOW",
+    "info": "INFO",
+}
+
+
+def _sort_findings(state: SessionState) -> list:
+    return sorted(
+        state.findings,
+        key=lambda f: (
+            SEVERITY_ORDER.get(f.severity, 99),
+            -(f.cvss_score or 0.0),
+            f.title,
+        ),
+    )
+
+
+def _severity_rank(state: SessionState) -> list[str]:
+    return [f"{name}: {count}" for name, count in state.severity_counts().items() if count] or [
+        "no findings"
+    ]
+
+
+def build_markdown(state: SessionState, settings: ReportSettings) -> str:
+    findings = _sort_findings(state)
+    mitigations_by_finding: dict[str, list] = {}
+    for mitigation in state.mitigations:
+        mitigations_by_finding.setdefault(mitigation.finding_id, []).append(mitigation)
+
+    lines: list[str] = []
+    lines.append(f"# SplitAgent Security Report - {state.name}")
+    lines.append("")
+    lines.append(f"- **Session:** `{state.id}`")
+    lines.append(f"- **Target:** {state.target or 'n/a'} ({state.target_kind})")
+    lines.append(f"- **Scope:** {', '.join(state.scope) or 'n/a'}")
+    lines.append(f"- **Model:** {state.provider or 'n/a'} / {state.model or 'n/a'}")
+    lines.append(f"- **Started:** {state.started_at}")
+    lines.append(f"- **Ended:** {state.ended_at or 'in progress'}")
+    lines.append(f"- **Rounds:** {len(state.rounds)}")
+    lines.append("")
+    lines.append("## Executive summary")
+    lines.append("")
+    lines.append(
+        f"The audit surfaced **{len(state.findings)} findings** and "
+        f"**{len(state.mitigations)} mitigations**. Severity distribution: "
+        f"{', '.join(_severity_rank(state))}. "
+        f"Resilience score: **{state.resilience_score()}/100**."
+    )
+    lines.append("")
+    if state.usage:
+        lines.append("Model usage: " + ", ".join(f"{k}={v}" for k, v in state.usage.items()) + ".")
+        lines.append("")
+
+    lines.append("## Findings")
+    lines.append("")
+    if not findings:
+        lines.append("_No findings were recorded._")
+        lines.append("")
+    for finding in findings:
+        cvss = (
+            f"{finding.cvss_score:.1f} ({finding.cvss_vector})"
+            if finding.cvss_vector
+            else f"{finding.cvss_score:.1f}"
+        )
+        lines.append(
+            f"### {finding.id} - {finding.title} [{SEVERITY_BADGE.get(finding.severity, finding.severity)}]"
+        )
+        lines.append("")
+        lines.append(f"- **CVSS:** {cvss}")
+        lines.append(f"- **Category:** {finding.category}")
+        lines.append(f"- **Status:** {finding.status}")
+        lines.append(f"- **Confidence:** {finding.confidence}")
+        lines.append(f"- **Endpoint:** {finding.endpoint or finding.target}")
+        lines.append(f"- **Discovered in round:** {finding.round}")
+        lines.append("")
+        if finding.description:
+            lines.append(finding.description)
+            lines.append("")
+        if settings.include_evidence and finding.evidence:
+            lines.append("**Evidence**")
+            lines.append("")
+            lines.append("```")
+            lines.append(finding.evidence)
+            lines.append("```")
+            lines.append("")
+        if finding.recommendation:
+            lines.append(f"**Recommendation:** {finding.recommendation}")
+            lines.append("")
+        for mitigation in mitigations_by_finding.get(finding.id, []):
+            lines.append(
+                f"**Mitigation {mitigation.id}** ({mitigation.kind}, "
+                f"{mitigation.status}) - {mitigation.title}"
+            )
+            lines.append("")
+            if mitigation.description:
+                lines.append(mitigation.description)
+                lines.append("")
+            if settings.include_patches and mitigation.content:
+                lines.append("```")
+                lines.append(mitigation.content)
+                lines.append("```")
+                lines.append("")
+
+    lines.append("## Round timeline")
+    lines.append("")
+    for round_ in state.rounds:
+        lines.append(f"### Round {round_.index}")
+        lines.append("")
+        lines.append(f"**Red:** {round_.red_summary or '(none)'}")
+        lines.append("")
+        lines.append(f"**Blue:** {round_.blue_summary or '(none)'}")
+        lines.append("")
+
+    if state.notes:
+        lines.append("## Analyst notes")
+        lines.append("")
+        for note in state.notes:
+            lines.append(f"- {note}")
+        lines.append("")
+
+    lines.append("---")
+    lines.append("")
+    lines.append(
+        "_Generated by SplitAgent. This report reflects automated, non-destructive "
+        "testing within the authorised scope and must be reviewed by a human "
+        "before remediation decisions are made._"
+    )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def build_json(state: SessionState) -> str:
+    payload: dict[str, Any] = state.to_dict()
+    payload["metrics"] = {
+        "resilience_score": state.resilience_score(),
+        "severity_counts": state.severity_counts(),
+        "finding_count": len(state.findings),
+        "mitigation_count": len(state.mitigations),
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    return json.dumps(payload, indent=2, ensure_ascii=False)
+
+
+def build_html(state: SessionState, settings: ReportSettings) -> str:
+    findings = _sort_findings(state)
+    mitigations_by_finding: dict[str, list] = {}
+    for mitigation in state.mitigations:
+        mitigations_by_finding.setdefault(mitigation.finding_id, []).append(mitigation)
+
+    def esc(value: Any) -> str:
+        return html.escape(str(value or ""))
+
+    rows = []
+    for finding in findings:
+        badge = finding.severity
+        rows.append(
+            f"<tr><td><code>{esc(finding.id)}</code></td>"
+            f"<td>{esc(finding.title)}</td>"
+            f"<td><span class='badge {badge}'>{badge.upper()}</span></td>"
+            f"<td>{finding.cvss_score:.1f}</td>"
+            f"<td>{esc(finding.endpoint or finding.target)}</td>"
+            f"<td>{esc(finding.status)}</td></tr>"
+        )
+
+    cards = []
+    for finding in findings:
+        mitigation_html = ""
+        for mitigation in mitigations_by_finding.get(finding.id, []):
+            content = (
+                f"<pre>{esc(mitigation.content)}</pre>"
+                if settings.include_patches and mitigation.content
+                else ""
+            )
+            mitigation_html += (
+                f"<div class='mitigation'><strong>{esc(mitigation.title)}</strong> "
+                f"<em>({esc(mitigation.kind)} / {esc(mitigation.status)})</em>"
+                f"<p>{esc(mitigation.description)}</p>{content}</div>"
+            )
+        evidence = (
+            f"<pre>{esc(finding.evidence)}</pre>"
+            if settings.include_evidence and finding.evidence
+            else ""
+        )
+        cards.append(
+            f"<section class='finding {finding.severity}'>"
+            f"<h3>{esc(finding.id)} &middot; {esc(finding.title)} "
+            f"<span class='badge {finding.severity}'>{finding.severity.upper()}</span></h3>"
+            f"<p class='meta'>CVSS {finding.cvss_score:.1f} "
+            f"{esc(finding.cvss_vector)} &middot; {esc(finding.category)} &middot; "
+            f"{esc(finding.endpoint or finding.target)}</p>"
+            f"<p>{esc(finding.description)}</p>{evidence}"
+            f"<p class='rec'><strong>Recommendation:</strong> {esc(finding.recommendation)}</p>"
+            f"{mitigation_html}</section>"
+        )
+
+    counts = state.severity_counts()
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SplitAgent Report - {esc(state.name)}</title>
+<style>
+:root {{
+  --bg:#0a0a0a; --panel:#141414; --element:#1e1e1e; --border:#484848;
+  --text:#eeeeee; --muted:#808080; --primary:#fab283; --red:#e06c75;
+  --orange:#f5a742; --green:#7fd88f; --cyan:#56b6c2; --yellow:#e5c07b;
+}}
+* {{ box-sizing:border-box; }}
+body {{ margin:0; background:var(--bg); color:var(--text);
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  line-height:1.6; }}
+.wrap {{ max-width:1040px; margin:0 auto; padding:48px 24px 96px; }}
+h1,h2,h3 {{ font-weight:600; letter-spacing:-0.01em; }}
+h1 {{ color:var(--primary); font-size:28px; margin-bottom:8px; }}
+h2 {{ margin-top:48px; border-bottom:1px solid var(--border); padding-bottom:8px; }}
+h3 {{ font-size:16px; }}
+.meta {{ color:var(--muted); font-size:13px; }}
+.summary {{ display:flex; gap:16px; flex-wrap:wrap; margin:24px 0; }}
+.card {{ background:var(--panel); border:1px solid var(--border); border-radius:10px;
+  padding:16px 20px; min-width:140px; }}
+.card .num {{ font-size:26px; color:var(--primary); }}
+.card .label {{ color:var(--muted); font-size:12px; text-transform:uppercase; }}
+table {{ width:100%; border-collapse:collapse; margin-top:16px; font-size:14px; }}
+th,td {{ text-align:left; padding:10px 12px; border-bottom:1px solid var(--element); }}
+th {{ color:var(--muted); font-weight:500; text-transform:uppercase; font-size:11px; }}
+.badge {{ padding:2px 8px; border-radius:999px; font-size:11px; font-weight:600; }}
+.badge.critical {{ background:#3a1620; color:#ff7b8a; }}
+.badge.high {{ background:#3a2a16; color:var(--orange); }}
+.badge.medium {{ background:#3a3416; color:var(--yellow); }}
+.badge.low {{ background:#16301f; color:var(--green); }}
+.badge.info {{ background:#16262e; color:var(--cyan); }}
+.finding {{ background:var(--panel); border:1px solid var(--border);
+  border-left:3px solid var(--primary); border-radius:10px; padding:20px 24px; margin:16px 0; }}
+.finding.critical {{ border-left-color:var(--red); }}
+.finding.high {{ border-left-color:var(--orange); }}
+.finding.medium {{ border-left-color:var(--yellow); }}
+pre {{ background:var(--element); border:1px solid var(--border); border-radius:8px;
+  padding:14px; overflow-x:auto; font-size:12.5px; color:#d8d8d8; }}
+.mitigation {{ border-top:1px dashed var(--border); margin-top:16px; padding-top:12px; }}
+.rec {{ color:var(--green); }}
+footer {{ margin-top:64px; color:var(--muted); font-size:12px; }}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>SplitAgent Security Report</h1>
+  <p class="meta">{esc(state.name)} &middot; session <code>{esc(state.id)}</code> &middot;
+    target {esc(state.target)} &middot; model {esc(state.provider)}/{esc(state.model)}</p>
+  <div class="summary">
+    <div class="card"><div class="num">{len(state.findings)}</div><div class="label">Findings</div></div>
+    <div class="card"><div class="num">{len(state.mitigations)}</div><div class="label">Mitigations</div></div>
+    <div class="card"><div class="num">{counts.get("critical", 0)}</div><div class="label">Critical</div></div>
+    <div class="card"><div class="num">{counts.get("high", 0)}</div><div class="label">High</div></div>
+    <div class="card"><div class="num">{state.resilience_score()}</div><div class="label">Resilience</div></div>
+  </div>
+  <h2>Findings overview</h2>
+  <table><thead><tr><th>ID</th><th>Title</th><th>Severity</th><th>CVSS</th>
+  <th>Endpoint</th><th>Status</th></tr></thead><tbody>
+  {"".join(rows) or '<tr><td colspan="6">No findings recorded.</td></tr>'}
+  </tbody></table>
+  <h2>Details</h2>
+  {"".join(cards) or "<p>No findings recorded.</p>"}
+  <footer>Generated by SplitAgent &middot; {datetime.now(timezone.utc).isoformat(timespec="seconds")}
+  &middot; automated non-destructive testing, human review required.</footer>
+</div>
+</body>
+</html>
+"""
+
+
+def write_reports(
+    state: SessionState, settings: ReportSettings, output_dir: Path | None = None
+) -> list[Path]:
+    directory = output_dir or Path(settings.output_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    stem = f"{state.name}-{state.id}-{stamp}"
+    written: list[Path] = []
+    for fmt in settings.formats:
+        fmt = fmt.lower()
+        if fmt in ("md", "markdown"):
+            path = directory / f"{stem}.md"
+            path.write_text(build_markdown(state, settings), encoding="utf-8")
+            written.append(path)
+        elif fmt == "html":
+            path = directory / f"{stem}.html"
+            path.write_text(build_html(state, settings), encoding="utf-8")
+            written.append(path)
+        elif fmt == "json":
+            path = directory / f"{stem}.json"
+            path.write_text(build_json(state), encoding="utf-8")
+            written.append(path)
+    return written
+
+
+def cvss_detail(vector: str) -> dict[str, Any]:
+    return describe(vector)

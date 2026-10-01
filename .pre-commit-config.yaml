@@ -1,0 +1,32 @@
+# Run `pre-commit install` once to enable these on every commit.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=2048"]  # the bundled Inter font is ~830 KB
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.9
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+      - id: ruff-format
+
+  # Fail the commit if a real credential is staged. The tests and docs contain
+  # placeholders such as "sk-..." which this pattern intentionally ignores.
+  - repo: local
+    hooks:
+      - id: no-secrets
+        name: no API keys in the commit
+        entry: python scripts/check_secrets.py
+        language: system
+        pass_filenames: true
+        types: [text]

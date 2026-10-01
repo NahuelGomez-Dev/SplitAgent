@@ -1,0 +1,94 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "splitagent"
+version = "0.1.0"
+description = "Autonomous dual-team (Purple Team) security framework powered by configurable LLM APIs."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "SplitAgent Contributors" }]
+keywords = ["security", "pentest", "agents", "purple-team", "llm", "automation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security",
+]
+
+dependencies = [
+    "rich>=13.7",
+    "textual>=0.60",
+    "httpx>=0.27",
+    "PyYAML>=6.0",
+    "cryptography>=42.0",
+    "pywebview>=5.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.6",
+    "pre-commit>=3.7",
+]
+http2 = ["h2>=4.1"]
+
+[project.scripts]
+splitagent = "splitagent.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/splitagent/splitagent"
+
+[tool.setuptools.packages.find]
+include = ["splitagent*"]
+
+[tool.setuptools.package-data]
+"splitagent.desktop" = ["web/*", "web/assets/*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = ["error::DeprecationWarning:splitagent.*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+exclude = [".venv", "splitagent-workspace", "splitagent/desktop/web"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "SIM", # flake8-simplify
+    "RUF", # ruff-specific
+]
+ignore = [
+    "E501",   # line length is handled by the formatter
+    "B008",   # function call in default argument (dataclass field patterns)
+    "SIM108", # ternary is not always clearer
+    # try/except/pass reads better than contextlib.suppress for best-effort
+    # cleanup where we also want to keep the comment next to the call.
+    "SIM105",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011", "SIM117", "RUF012"]
+"splitagent/tools/*.py" = ["B006"]  # mutable defaults carry tool schemas
+# asdict()-style builders legitimately rebuild mappings key by key.
+"splitagent/core/models.py" = ["C416"]
+# TUI class attributes hold Textual widget specs, not shared mutable state.
+"splitagent/ui/app.py" = ["RUF012"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["splitagent"]

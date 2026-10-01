@@ -1,0 +1,49 @@
+# SplitAgent project configuration.
+# Copy to `splitagent.yaml` (or run `splitagent init`) and edit.
+# The LLM / API credentials live in the GLOBAL config (~/.splitagent/config.yaml)
+# and can be changed at any time from inside the program (`splitagent config`).
+
+project:
+  name: "splitagent-demo"
+
+target:
+  kind: web                 # web | api | network | repo
+  url: "http://localhost:3000"
+  hosts: []
+  ports: [80, 443, 3000, 8080]
+  scope:
+    - "localhost"
+  out_of_scope: []
+
+run:
+  rounds: 3                 # Red -> Blue cycles
+  max_steps: 12             # max tool-calling steps per agent turn
+  tool_concurrency: 4       # independent tools per step run in parallel
+  safe_mode: true           # never send destructive payloads
+  allow_network: false      # restrict tools to target scope
+  compaction:               # context-window management
+    auto: true
+    prune: true
+    optimize: true          # strip settled reasoning + superseded snapshots
+  sandbox:
+    enabled: true
+    engine: docker
+    image: "bkimminich/juice-shop:latest"
+    network: "splitagent-net"
+    port_map:
+      "3000": 3000
+    auto_remove: true
+
+agents:
+  red:
+    enabled: true
+    temperature: 0.3
+  blue:
+    enabled: true
+    temperature: 0.2
+
+report:
+  formats: [markdown, html, json]
+  output_dir: "reports"
+  include_patches: true
+  include_evidence: true

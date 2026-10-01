@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# Tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# SplitAgent runtime artifacts
+.splitagent/
+sessions/
+reports/
+*.key
+splitagent.local.yaml
+
+# The agent workspace holds tooling, recon output and evidence: never commit it.
+splitagent-workspace/
+
+# Local config may contain API keys.
+splitagent.yaml

@@ -1,0 +1,659 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SplitAgent</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- Titlebar -->
+    <header class="titlebar pywebview-drag-region">
+      <div class="tb-left">
+        <div class="brand">
+          <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 2.2 20.5 7v10L12 21.8 3.5 17V7L12 2.2Z" fill="none"
+                  stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+            <path d="M12 2.2V21.8" stroke="var(--red)" stroke-width="1.6"/>
+            <path d="M12 12 20.5 7M12 12 3.5 7" stroke="var(--blue)" stroke-width="1.2" opacity=".8"/>
+          </svg>
+          <span class="brand-name">SplitAgent</span>
+          <span class="brand-ver" id="brand-ver"></span>
+        </div>
+        <div class="mode-switch" id="mode-switch">
+          <button class="mode-btn active" data-mode="audit">
+            <svg viewBox="0 0 16 16"><path d="M8 1.5 14 5v6l-6 3.5L2 11V5l6-3.5Z" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M8 8 14 5M8 8 2 5M8 8v6.5" fill="none" stroke="currentColor" stroke-width="1.1"/></svg>
+            Audit
+          </button>
+          <button class="mode-btn" data-mode="chat">
+            <svg viewBox="0 0 16 16"><path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
+            Copilot
+          </button>
+        </div>
+      </div>
+      <div class="tb-right">
+        <button class="icon-btn" id="btn-command" title="Command palette (Ctrl+K)">
+          <svg viewBox="0 0 16 16"><path d="M6.5 6.5 2 2m8 4.5L14 2M6.5 9.5 2 14m8-4.5L14 14" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linecap="round"/></svg>
+        </button>
+        <button class="icon-btn" id="btn-settings" title="Model settings">
+          <svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M8 1.6v2M8 12.4v2M1.6 8h2M12.4 8h2M3.5 3.5l1.4 1.4M11.1 11.1l1.4 1.4M12.5 3.5l-1.4 1.4M4.9 11.1l-1.4 1.4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+        </button>
+        <div class="window-controls">
+          <button class="wc" id="win-min" title="Minimize"><svg viewBox="0 0 12 12"><path d="M2 6h8" stroke="currentColor" stroke-width="1.2"/></svg></button>
+          <button class="wc" id="win-max" title="Maximize"><svg viewBox="0 0 12 12"><rect x="2.5" y="2.5" width="7" height="7" rx="1" fill="none" stroke="currentColor" stroke-width="1.1"/></svg></button>
+          <button class="wc close" id="win-close" title="Close"><svg viewBox="0 0 12 12"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg></button>
+        </div>
+      </div>
+    </header>
+
+    <div class="body">
+      <!-- Sidebar -->
+      <aside class="sidebar">
+        <div class="side-block">
+          <div class="side-label">Engagement</div>
+          <div class="target-card" id="target-card">
+            <div class="target-row">
+              <span class="badge kind" id="tgt-kind">web</span>
+              <span class="target-url" id="tgt-url">not configured</span>
+            </div>
+            <div class="target-meta" id="tgt-meta">Run the guided setup to begin.</div>
+            <div class="target-actions">
+              <button class="mini-btn accent" id="btn-wizard">New audit</button>
+              <button class="mini-btn" id="btn-project">Advanced…</button>
+            </div>
+            <div class="side-label ws-label">Workspace</div>
+            <button class="workspace-card" id="btn-workspace" title="Open the agents' working directory">
+              <svg viewBox="0 0 16 16"><path d="M1.5 4.5h5l1.2 1.5h6.8v6.5h-13z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
+              <span class="ws-name" id="ws-name">splitagent-workspace</span>
+              <span class="ws-badge" id="ws-badge">—</span>
+            </button>
+            <div class="side-label ws-label">Environment</div>
+            <button class="workspace-card" id="btn-toolbox" title="Isolated execution environment">
+              <svg viewBox="0 0 16 16"><path d="M2 5.5h12v7H2z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M6 5.5V4a2 2 0 0 1 4 0v1.5" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
+              <span class="ws-name" id="tb-name">toolbox</span>
+              <span class="ws-badge" id="tb-badge">—</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="side-block grow">
+          <div class="side-label">Sessions</div>
+          <div class="session-list" id="session-list"></div>
+        </div>
+
+        <div class="side-footer">
+          <button class="model-chip" id="side-model-btn" title="Choose model">
+            <span class="dot" id="side-model-dot"></span>
+            <span class="model-name" id="side-model-name">no model</span>
+            <svg viewBox="0 0 12 12" class="chev"><path d="M3 5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+      </aside>
+
+      <!-- Center -->
+      <main class="center">
+        <!-- AUDIT VIEW -->
+        <div class="view" id="view-audit">
+          <div class="stream" id="stream">
+            <div class="empty-state" id="stream-empty">
+              <div class="empty-mark">
+                <svg viewBox="0 0 24 24"><path d="M12 2.2 20.5 7v10L12 21.8 3.5 17V7L12 2.2Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M12 2.2V21.8" stroke="var(--red)" stroke-width="1.4"/></svg>
+              </div>
+              <h1>Purple-team your target</h1>
+              <p>The <b class="red">Red Agent</b> maps the attack surface and proves weaknesses with
+                 non-destructive evidence. The <b class="blue">Blue Agent</b> detects the activity,
+                 applies countermeasures and verifies them.</p>
+              <button class="btn primary big" id="empty-start">Start guided setup</button>
+              <p class="muted">A few questions about the target and the system does the rest.
+                 Prefer to ask first? Switch to <b>Copilot</b>.</p>
+            </div>
+          </div>
+
+          <div class="todo-dock hidden" id="todo-dock">
+            <div class="td-head" id="td-toggle" role="button" tabindex="0">
+              <span class="td-progress"><b id="td-done">0</b> of <b id="td-total">0</b> todos completed</span>
+              <span class="td-preview" id="td-preview"></span>
+              <svg class="td-chevron" viewBox="0 0 12 12"><path d="M3 5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+            </div>
+            <div class="td-list" id="td-list"></div>
+          </div>
+
+          <div class="composer">
+            <div class="composer-card">
+              <textarea id="objective" rows="1"
+                placeholder="Objective — e.g. audit the login and search flows of the target"></textarea>
+              <div class="composer-bar">
+                <button class="pill model-trigger" id="model-pill" title="Choose model">
+                  <span class="dot" id="pill-dot"></span>
+                  <span id="pill-model">configure model</span>
+                  <svg viewBox="0 0 12 12" class="chev"><path d="M3 5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+                </button>
+                <div class="spacer"></div>
+                <label class="chip" title="Run in a disposable Docker container">
+                  <input type="checkbox" id="opt-sandbox" /> Sandbox
+                </label>
+                <label class="chip num" title="Red/Blue rounds">
+                  <span>rounds</span>
+                  <input type="number" id="opt-rounds" min="1" max="10" value="3" />
+                </label>
+                <button class="btn ghost" id="btn-guided">Guided</button>
+                <button class="btn primary" id="btn-run">Run audit</button>
+                <button class="btn danger hidden" id="btn-stop">Stop</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- CHAT VIEW -->
+        <div class="view hidden" id="view-chat">
+          <div class="stream" id="chat-stream">
+            <div class="empty-state" id="chat-empty">
+              <div class="empty-mark">
+                <svg viewBox="0 0 24 24"><path d="M3.5 5.5h17v10h-9l-4.5 4v-4H3.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
+              </div>
+              <h1>Pentest copilot</h1>
+              <p>Ask anything: plan an engagement, explain a vulnerability, inspect the
+                 target with tools, draft payloads, patches or report text.</p>
+              <div class="suggestions">
+                <button class="suggestion">Plan a web app pentest for my target</button>
+                <button class="suggestion">What should I test first and why?</button>
+                <button class="suggestion">Scan the target and summarise the attack surface</button>
+                <button class="suggestion">Explain CVSS and score my findings</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="composer">
+            <div class="composer-card">
+              <textarea id="chat-input" rows="1"
+                placeholder="Ask the copilot… (Ctrl+Enter to send)"></textarea>
+              <div class="composer-bar">
+                <button class="pill model-trigger" id="chat-model-pill" title="Choose model">
+                  <span class="dot" id="chat-pill-dot"></span>
+                  <span id="chat-pill-model">configure model</span>
+                  <svg viewBox="0 0 12 12" class="chev"><path d="M3 5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+                </button>
+                <div class="spacer"></div>
+                <button class="btn ghost" id="chat-clear">Clear</button>
+                <button class="btn primary" id="chat-send">Send</button>
+                <button class="btn danger hidden" id="chat-stop">Stop</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+
+      <!-- Review panel -->
+      <aside class="review">
+        <div class="review-tabs">
+          <button class="rtab active" data-tab="findings">Findings <span class="count" id="count-findings">0</span></button>
+          <button class="rtab" data-tab="mitigations">Mitigations <span class="count" id="count-mitigations">0</span></button>
+          <button class="rtab" data-tab="report">Report</button>
+          <button class="rtab" data-tab="trace">Trace</button>
+          <button class="rtab" data-tab="activity">Activity</button>
+        </div>
+        <div class="review-body">
+          <div class="rpanel active" id="panel-findings">
+            <div class="panel-empty">No findings yet.</div>
+          </div>
+          <div class="rpanel" id="panel-mitigations">
+            <div class="panel-empty">No mitigations yet.</div>
+          </div>
+          <div class="rpanel" id="panel-report">
+            <div class="panel-empty">The report is generated at the end of a run.</div>
+          </div>
+          <div class="rpanel" id="panel-trace">
+            <div class="trace-head">
+              <span>Full replay: every reasoning step, tool call with arguments and
+                output, token usage and context event.</span>
+              <button class="mini-btn" id="btn-dump-trace">Dump JSON</button>
+            </div>
+            <div class="trace-empty">Nothing captured yet.</div>
+          </div>
+          <div class="rpanel" id="panel-activity"></div>
+        </div>
+        <div class="review-footer">
+          <button class="btn ghost" id="btn-export">Export report</button>
+          <button class="btn ghost" id="btn-open-reports" disabled>Open folder</button>
+        </div>
+      </aside>
+    </div>
+
+    <footer class="statusbar">
+      <span class="st" id="st-mode">audit</span>
+      <span class="st sep">·</span>
+      <span class="st" id="st-provider">—</span>
+      <span class="st sep">·</span>
+      <span class="st" id="st-round">round 0/0</span>
+      <span class="st sep">·</span>
+      <span class="st phase" id="st-phase">idle</span>
+      <span class="st spacer"></span>
+      <span class="st" id="st-events">0 events</span>
+      <span class="st" id="st-context">context —</span>
+      <span class="resilience" title="Share of the discovered attack surface that is mitigated">
+        <span class="bar"><i id="res-bar" style="width:100%"></i></span>
+        <b id="st-resilience">100</b>
+      </span>
+    </footer>
+  </div>
+
+  <!-- Model picker popover (OpenCode-style) -->
+  <div class="model-popover hidden" id="model-popover">
+    <div class="mp-search">
+      <svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M10.2 10.2 14 14" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+      <input id="mp-input" placeholder="Search models" spellcheck="false" autocomplete="off" />
+      <button id="mp-clear" class="mp-clear hidden" title="Clear">✕</button>
+    </div>
+    <div class="mp-divider"></div>
+    <div class="mp-list" id="mp-list"></div>
+    <div class="mp-divider"></div>
+    <div class="mp-manage" id="mp-manage">
+      <svg viewBox="0 0 16 16"><path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><circle cx="6" cy="4" r="1.6" fill="var(--bg-base)" stroke="currentColor" stroke-width="1.2"/><circle cx="11" cy="8" r="1.6" fill="var(--bg-base)" stroke="currentColor" stroke-width="1.2"/><circle cx="7" cy="12" r="1.6" fill="var(--bg-base)" stroke="currentColor" stroke-width="1.2"/></svg>
+      <span>Manage models…</span>
+    </div>
+  </div>
+
+  <!-- Guided audit wizard -->
+  <div class="overlay hidden" id="modal-wizard">
+    <div class="dialog wizard">
+      <div class="wizard-head">
+        <div>
+          <h2>New audit</h2>
+          <p class="dialog-sub" id="wiz-hint">What kind of target are you testing?</p>
+        </div>
+        <button class="icon-btn" data-close>✕</button>
+      </div>
+      <div class="wizard-progress" id="wiz-progress">
+        <span class="wdot active"></span><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span>
+      </div>
+      <div class="wizard-body">
+        <!-- Step 0: kind -->
+        <section class="wstep active" data-step="0">
+          <div class="kind-grid" id="kind-grid">
+            <button class="kind-card" data-kind="web">
+              <svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M3 10h14M10 3c2 2 2 12 0 14M10 3c-2 2-2 12 0 14" fill="none" stroke="currentColor" stroke-width="1.1"/></svg>
+              <b>Web application</b><span>Site or app with a browser UI</span>
+            </button>
+            <button class="kind-card" data-kind="api">
+              <svg viewBox="0 0 20 20"><path d="M6 5 2 10l4 5M14 5l4 5-4 5M11 4l-2 12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+              <b>API</b><span>REST / GraphQL endpoint</span>
+            </button>
+            <button class="kind-card" data-kind="network">
+              <svg viewBox="0 0 20 20"><rect x="7" y="2" width="6" height="4" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/><rect x="2" y="14" width="6" height="4" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/><rect x="12" y="14" width="6" height="4" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M10 6v4M5 14v-2h10v2" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
+              <b>Network / host</b><span>IP range or single host</span>
+            </button>
+            <button class="kind-card" data-kind="repo">
+              <svg viewBox="0 0 20 20"><path d="M4 3h9l3 3v11H4z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M13 3v3h3M7 9h6M7 12h6" fill="none" stroke="currentColor" stroke-width="1.1"/></svg>
+              <b>Repository</b><span>Source code review</span>
+            </button>
+          </div>
+        </section>
+
+        <!-- Step 1: address -->
+        <section class="wstep" data-step="1">
+          <label class="field span2">
+            <span id="wiz-url-label">Target URL</span>
+            <input id="wiz-url" placeholder="http://localhost:3000" />
+          </label>
+          <label class="field span2">
+            <span>In scope (auto-filled, comma separated)</span>
+            <input id="wiz-scope" placeholder="localhost" />
+          </label>
+          <label class="field span2">
+            <span>Out of scope — never touch (optional)</span>
+            <input id="wiz-out" placeholder="production.example.com" />
+          </label>
+          <label class="field span2">
+            <span>Ports to scan (optional)</span>
+            <input id="wiz-ports" placeholder="80, 443, 3000, 8080" />
+          </label>
+          <div class="preset-row" id="wiz-presets">
+            <span class="preset-label">Lab presets:</span>
+            <button class="mini-btn" data-preset="juice-shop">juice-shop</button>
+            <button class="mini-btn" data-preset="dvwa">dvwa</button>
+            <button class="mini-btn" data-preset="bwapp">bwapp</button>
+            <button class="mini-btn" data-preset="webgoat">webgoat</button>
+          </div>
+        </section>
+
+        <!-- Step 2: environment -->
+        <section class="wstep" data-step="2">
+          <div class="choice-list">
+            <label class="choice">
+              <input type="radio" name="env" value="sandbox" checked />
+              <div><b>Launch a disposable sandbox</b><span>A Docker container is created, tested and removed. Recommended.</span></div>
+            </label>
+            <label class="choice">
+              <input type="radio" name="env" value="existing" />
+              <div><b>Test the target as-is</b><span>Run against the real endpoint. Make sure you are authorised.</span></div>
+            </label>
+          </div>
+          <label class="field span2" id="wiz-image-field">
+            <span>Sandbox image</span>
+            <input id="wiz-image" placeholder="bkimminich/juice-shop:latest" />
+          </label>
+          <label class="field check">
+            <input type="checkbox" id="wiz-network" /> <span>Allow testing hosts outside the scope (lab only)</span>
+          </label>
+        </section>
+
+        <!-- Step 3: access -->
+        <section class="wstep" data-step="3">
+          <p class="wiz-note">Optional. If you have credentials, the agents test authenticated
+            surfaces too. Stored locally in <code>splitagent.yaml</code>.</p>
+          <div class="form-grid">
+            <label class="field"><span>Username</span><input id="wiz-user" placeholder="admin" /></label>
+            <label class="field"><span>Password</span><input id="wiz-pass" type="password" placeholder="••••••" /></label>
+            <label class="field span2"><span>Bearer token / API key</span><input id="wiz-token" type="password" placeholder="eyJ…" /></label>
+            <label class="field span2"><span>Cookie header</span><input id="wiz-cookies" placeholder="session=abc; csrf=xyz" /></label>
+            <label class="field span2"><span>Extra headers (one per line, <code>Name: value</code>)</span><textarea id="wiz-headers" rows="3" placeholder="X-API-Key: …"></textarea></label>
+          </div>
+        </section>
+
+        <!-- Step 4: depth + objective -->
+        <section class="wstep" data-step="4">
+          <div class="depth-grid" id="depth-grid">
+            <button class="depth-card" data-depth="quick"><b>Quick</b><span>1 round · 6 steps</span><em>~ a few minutes</em></button>
+            <button class="depth-card active" data-depth="standard"><b>Standard</b><span>3 rounds · 12 steps</span><em>balanced</em></button>
+            <button class="depth-card" data-depth="deep"><b>Deep</b><span>5 rounds · 20 steps</span><em>thorough</em></button>
+          </div>
+        <label class="field span2">
+          <span>Objective / notes for the agents (optional)</span>
+          <textarea id="wiz-objective" rows="3" placeholder="Focus on authentication and the search endpoint. Ignore marketing pages."></textarea>
+        </label>
+        <div class="form-grid">
+          <label class="field span2">
+            <span>Agent workspace — directory for tools, recon and notes</span>
+            <input id="wiz-ws-path" placeholder="splitagent-workspace (default)" />
+          </label>
+          <label class="field check">
+            <input type="checkbox" id="wiz-ws-install" checked />
+            <span>Let the agents install tooling</span>
+          </label>
+          <label class="field check">
+            <input type="checkbox" id="wiz-ws-external" checked />
+            <span>Let them run external tools</span>
+          </label>
+          <label class="field span2">
+            <span>Operator instructions (written to workspace/AGENTS.md)</span>
+            <textarea id="wiz-ws-instructions" rows="3" placeholder="Prefer passive recon first. Rotate user agents. Avoid noisy scanners."></textarea>
+          </label>
+        </div>
+        <div class="wiz-summary" id="wiz-summary"></div>
+        </section>
+      </div>
+      <div class="wizard-foot">
+        <button class="btn ghost" id="wiz-back">Back</button>
+        <span class="spacer"></span>
+        <button class="btn ghost" data-close>Cancel</button>
+        <button class="btn primary" id="wiz-next">Next</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings -->
+  <div class="overlay hidden" id="modal-settings">
+    <div class="dialog settings">
+      <div class="settings-head">
+        <div class="settings-tabs" id="settings-tabs">
+          <button class="stab active" data-stab="models">Models</button>
+          <button class="stab" data-stab="providers">Providers</button>
+          <button class="stab" data-stab="general">General</button>
+        </div>
+        <button class="icon-btn" data-close>✕</button>
+      </div>
+
+      <!-- Models tab -->
+      <section class="spanel active" id="spanel-models">
+        <div class="spanel-head">
+          <h2 class="spanel-title">Models</h2>
+          <button class="btn ghost" id="btn-add-model">+ Custom model</button>
+        </div>
+        <div class="ssearch">
+          <svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M10.2 10.2 14 14" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+          <input id="s-model-search" placeholder="Search models" spellcheck="false" autocomplete="off" />
+          <button class="mp-clear hidden" id="s-model-search-clear">✕</button>
+        </div>
+        <div class="spanel-body" id="s-models-list"></div>
+        <p class="settings-hint">Toggle models to control what appears in the model picker.
+          Your active model is marked with a dot.</p>
+      </section>
+
+      <!-- Providers tab -->
+      <section class="spanel" id="spanel-providers">
+        <div class="spanel-head">
+          <h2 class="spanel-title">Providers</h2>
+          <button class="btn ghost" id="btn-connect-provider">+ Connect provider</button>
+        </div>
+        <div class="spanel-body">
+          <div class="s-section">
+            <div class="s-section-title">Connected</div>
+            <div class="s-list" id="s-connected"></div>
+          </div>
+          <div class="s-section">
+            <div class="s-section-title">Popular</div>
+            <div class="s-list" id="s-popular"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- General tab -->
+      <section class="spanel" id="spanel-general">
+        <div class="spanel-head"><h2 class="spanel-title">General</h2></div>
+        <div class="spanel-body">
+          <div class="s-section">
+            <div class="s-section-title">Inference</div>
+            <div class="form-grid">
+              <label class="field">
+                <span>Temperature</span>
+                <input id="f-temperature" type="number" step="0.1" min="0" max="2" />
+              </label>
+              <label class="field">
+                <span>Max tokens</span>
+                <input id="f-max-tokens" type="number" step="256" min="256" />
+              </label>
+            </div>
+          </div>
+          <div class="s-section">
+            <div class="s-section-title">Configuration file</div>
+            <div class="config-row">
+              <code id="settings-path"></code>
+              <button class="btn ghost" id="btn-open-config">Open folder</button>
+            </div>
+          </div>
+          <div class="test-row">
+            <button class="btn ghost" id="btn-test">Test connection</button>
+            <span class="test-result" id="test-result"></span>
+          </div>
+        </div>
+      </section>
+
+      <div class="settings-foot">
+        <span class="settings-status" id="settings-status"></span>
+        <span class="spacer"></span>
+        <button class="btn ghost" data-close>Close</button>
+        <button class="btn primary" id="btn-save-settings">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Connect provider modal -->
+  <div class="overlay hidden" id="modal-provider">
+    <div class="dialog wide">
+      <div class="dialog-head">
+        <h2 id="provider-title">Connect provider</h2>
+        <button class="icon-btn" data-close>✕</button>
+      </div>
+      <p class="dialog-sub">Keys are stored locally in <code>splitagent config.yaml</code>.</p>
+      <div class="form-grid">
+        <label class="field span2">
+          <span>Provider</span>
+          <select id="pr-provider"></select>
+        </label>
+        <label class="field span2">
+          <span>Base URL</span>
+          <input id="pr-base-url" placeholder="https://api.openai.com/v1" />
+        </label>
+        <label class="field span2">
+          <span>API key</span>
+          <input id="pr-api-key" type="password" placeholder="sk-…" />
+        </label>
+        <label class="field span2">
+          <span>Default model (optional — the catalogue is fetched on connect)</span>
+          <input id="pr-model" placeholder="gpt-4o-mini" />
+        </label>
+      </div>
+      <label class="field check">
+        <input type="checkbox" id="pr-activate" checked /> <span>Make this the active provider</span>
+      </label>
+      <div class="dialog-foot">
+        <button class="btn ghost" data-close>Cancel</button>
+        <button class="btn primary" id="btn-provider-connect">Connect</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add custom model -->
+  <div class="overlay hidden" id="modal-model">
+    <div class="dialog">
+      <div class="dialog-head">
+        <h2>Custom model</h2>
+        <button class="icon-btn" data-close>✕</button>
+      </div>
+      <p class="dialog-sub">Add a model id that the provider catalogue does not list.</p>
+      <div class="form-grid">
+        <label class="field span2">
+          <span>Provider</span>
+          <select id="cm-provider"></select>
+        </label>
+        <label class="field span2">
+          <span>Model id</span>
+          <input id="cm-id" placeholder="my-model-id" />
+        </label>
+        <label class="field span2">
+          <span>Display name (optional)</span>
+          <input id="cm-name" placeholder="My model" />
+        </label>
+      </div>
+      <div class="dialog-foot">
+        <button class="btn ghost" data-close>Cancel</button>
+        <button class="btn primary" id="btn-model-add">Add</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Project modal -->
+  <div class="overlay hidden" id="modal-project">
+    <div class="dialog wide">
+      <div class="dialog-head">
+        <h2>Engagement</h2>
+        <button class="icon-btn" data-close>✕</button>
+      </div>
+      <p class="dialog-sub">Target scope and run parameters, saved to <code id="project-path"></code>.</p>
+      <div class="form-grid">
+        <label class="field">
+          <span>Kind</span>
+          <select id="p-kind">
+            <option value="web">web</option>
+            <option value="api">api</option>
+            <option value="network">network</option>
+            <option value="repo">repo</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Target URL</span>
+          <input id="p-url" placeholder="http://localhost:3000" />
+        </label>
+        <label class="field span2">
+          <span>Scope (comma separated)</span>
+          <input id="p-scope" placeholder="localhost, 10.0.0.0/24" />
+        </label>
+        <label class="field span2">
+          <span>Out of scope (comma separated)</span>
+          <input id="p-out" placeholder="production.example.com" />
+        </label>
+        <label class="field">
+          <span>Rounds</span>
+          <input id="p-rounds" type="number" min="1" max="10" />
+        </label>
+        <label class="field">
+          <span>Max steps / turn</span>
+          <input id="p-steps" type="number" min="1" max="40" />
+        </label>
+        <label class="field">
+          <span>Sandbox image</span>
+          <input id="p-image" placeholder="bkimminich/juice-shop:latest" />
+        </label>
+        <label class="field check">
+          <input type="checkbox" id="p-sandbox" /> <span>Use Docker sandbox</span>
+        </label>
+      </div>
+      <div class="dialog-foot">
+        <button class="btn ghost" id="btn-load-project">Open file…</button>
+        <span class="spacer"></span>
+        <button class="btn ghost" data-close>Cancel</button>
+        <button class="btn primary" id="btn-save-project">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toolbox consent -->
+  <div class="overlay hidden" id="modal-toolbox">
+    <div class="dialog wide">
+      <div class="dialog-head">
+        <h2>Set up the isolated environment</h2>
+        <button class="icon-btn" data-close>✕</button>
+      </div>
+      <p class="dialog-sub">
+        SplitAgent installs and runs its security tools inside a disposable Docker
+        container, so your computer is never modified. Recommended for a
+        professional, reproducible workflow.
+      </p>
+      <div class="setup-box" id="tb-setup-box">
+        <div class="setup-row"><span>Docker</span><b id="tb-docker">checking…</b></div>
+        <div class="setup-row"><span>Engine</span><b id="tb-daemon">checking…</b></div>
+        <div class="setup-row"><span>Image</span><b id="tb-image">checking…</b></div>
+        <div class="setup-row"><span>Workspace</span><b id="tb-workspace">—</b></div>
+      </div>
+      <label class="field span2">
+        <span>Edition</span>
+        <select id="tb-edition">
+          <option value="standard">Standard — Debian + curated recon tools (~450 MB)</option>
+          <option value="kali">Professional — Kali Linux, everything (~2.5 GB)</option>
+        </select>
+      </label>
+      <p class="wiz-note" id="tb-hint">
+        The image is built once. After that the toolbox starts silently in the
+        background and you never have to touch Docker again.
+      </p>
+      <label class="field check">
+        <input type="checkbox" id="tb-autostart" checked />
+        <span>Start Docker automatically when needed</span>
+      </label>
+      <div class="test-row">
+        <span class="test-result" id="tb-progress"></span>
+      </div>
+      <div class="dialog-foot">
+        <button class="btn ghost" id="tb-skip">Continue without it</button>
+        <span class="spacer"></span>
+        <button class="btn ghost" data-close>Later</button>
+        <button class="btn primary" id="tb-install">Install environment</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Command palette -->
+  <div class="overlay hidden" id="modal-command">
+    <div class="dialog palette">
+      <input id="command-input" placeholder="Type a command…" autocomplete="off" />
+      <div class="command-list" id="command-list"></div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div class="toast hidden" id="toast"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
