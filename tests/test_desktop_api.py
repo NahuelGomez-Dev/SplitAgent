@@ -184,6 +184,62 @@ def test_connect_provider_requires_a_provider(api):
 
 
 # --------------------------------------------------------------------------- #
+# interface experience
+# --------------------------------------------------------------------------- #
+def test_bootstrap_exposes_the_experience(app, api):
+    data = api.bootstrap()
+    assert "ui" in data
+    # A first run defaults to the simple interface.
+    assert data["ui"]["developer_mode"] is False
+    assert data["ui"]["experience"] == "auto"
+
+
+def test_set_experience_developer(app, api):
+    result = api.set_experience("developer")
+    assert result["ok"] is True
+    assert result["developer_mode"] is True
+    assert app.global_config.ui.experience_chosen is True
+    # Persisted, so the next launch keeps it.
+    assert load_global_config().ui.experience == "developer"
+
+
+def test_set_experience_guided(app, api):
+    result = api.set_experience("guided")
+    assert result["ok"] is True
+    assert result["developer_mode"] is False
+    assert load_global_config().ui.developer_mode is False
+
+
+def test_set_experience_auto_clears_the_explicit_choice(app, api):
+    api.set_experience("developer")
+    result = api.set_experience("auto")
+    assert result["ok"] is True
+    assert app.global_config.ui.experience_chosen is False
+
+
+def test_set_experience_rejects_an_unknown_value(api):
+    result = api.set_experience("fancy")
+    assert result["ok"] is False
+    assert "unknown" in result["error"]
+
+
+def test_set_ui_preference_toggles_thinking(app, api):
+    api.set_ui_preference({"show_thinking": False})
+    assert app.global_config.ui.show_thinking is False
+    assert load_global_config().ui.show_thinking is False
+    api.set_ui_preference({"show_thinking": True})
+    assert load_global_config().ui.show_thinking is True
+
+
+def test_experience_promotes_after_a_completed_audit(app):
+    from splitagent.config import save_global_config
+
+    app.global_config.ui.audits_completed = 1
+    save_global_config(app.global_config)
+    assert app.api.bootstrap()["ui"]["developer_mode"] is True
+
+
+# --------------------------------------------------------------------------- #
 # project
 # --------------------------------------------------------------------------- #
 def test_save_project_persists_every_field(app, api):

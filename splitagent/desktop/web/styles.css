@@ -1105,6 +1105,98 @@ body {
   border-radius: 999px; background: var(--layer-02); color: var(--text-faint);
 }
 
+/* ── Experience-specific content ──────────────────────────── */
+/* Elements carry data-exp and are shown only in the matching interface.
+   The JS toggles a body[data-experience] attribute. */
+body[data-experience="guided"] [data-exp="developer"] { display: none !important; }
+body[data-experience="developer"] [data-exp="guided"] { display: none !important; }
+.dev-only-inline { display: inline-flex; align-items: center; gap: 8px; }
+
+/* ── Experience picker (Settings > General) ───────────────── */
+.experience-picker { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.exp-card {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 4px;
+  padding: 14px; background: var(--bg-deep); border: 1px solid var(--border);
+  border-radius: var(--radius); color: var(--text-muted);
+  font-family: inherit; text-align: left; cursor: pointer;
+  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+.exp-card svg { width: 22px; height: 22px; margin-bottom: 4px; color: var(--text-faint); }
+.exp-card b { color: var(--text); font-size: 13px; font-weight: 600; }
+.exp-card span { font-size: 11.5px; color: var(--text-faint); line-height: 16px; }
+.exp-card:hover { border-color: var(--border-strong); }
+.exp-card.active { border-color: var(--accent); background: var(--accent-soft); }
+.exp-card.active svg { color: var(--accent-text); }
+
+/* ── Guided results (plain language) ──────────────────────── */
+.guided-hero {
+  padding: 16px; border-radius: var(--radius-lg);
+  background: linear-gradient(180deg, var(--bg-base), color-mix(in srgb, var(--bg-base) 94%, #000));
+  border: 1px solid var(--border-muted); margin-bottom: 14px;
+}
+.guided-hero .gh-title { font-size: 15px; font-weight: 650; margin-bottom: 4px; }
+.guided-hero .gh-sub { font-size: 12.5px; color: var(--text-muted); line-height: 19px; }
+.guided-hero.ok { border-color: rgba(87, 207, 125, 0.4); }
+.guided-hero.warn { border-color: rgba(255, 154, 92, 0.4); }
+.guided-hero.bad { border-color: rgba(241, 72, 79, 0.4); }
+
+.guided-score {
+  display: flex; align-items: baseline; gap: 8px; margin: 10px 0 6px;
+}
+.guided-score b { font-size: 32px; font-weight: 700; line-height: 1; }
+.guided-score span { color: var(--text-faint); font-size: 12px; }
+
+.guided-group { margin-bottom: 16px; }
+.guided-group-title {
+  display: flex; align-items: center; gap: 8px; font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.07em; font-weight: 650;
+  margin-bottom: 8px;
+}
+.guided-group-title .sev-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+
+.issue {
+  background: var(--bg-base); border: 1px solid var(--border-muted);
+  border-radius: var(--radius); padding: 13px 14px; margin-bottom: 8px;
+  cursor: pointer; transition: border-color var(--dur) var(--ease);
+}
+.issue:hover { border-color: var(--border-strong); }
+.issue .issue-head { display: flex; align-items: flex-start; gap: 10px; }
+.issue .issue-icon { width: 18px; height: 18px; flex: none; margin-top: 1px; }
+.issue .issue-title { font-size: 13.5px; font-weight: 600; line-height: 19px; }
+.issue .issue-where {
+  font-family: var(--mono); font-size: 11px; color: var(--text-faint);
+  margin-top: 3px; word-break: break-all;
+}
+.issue .issue-why { font-size: 12.5px; color: var(--text-muted); line-height: 19px; margin-top: 8px; }
+.issue .issue-detail { display: none; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border-muted); }
+.issue.open .issue-detail { display: block; }
+.issue .issue-detail dt { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-faint); margin: 8px 0 3px; }
+.issue .issue-detail dd { font-size: 12.5px; color: var(--text-muted); line-height: 19px; }
+.issue .issue-detail pre {
+  background: var(--bg-deep); border: 1px solid var(--border-muted);
+  border-radius: var(--radius-sm); padding: 9px 11px; margin: 0;
+  font-family: var(--mono); font-size: 11px; line-height: 16px;
+  color: var(--text-muted); white-space: pre-wrap; word-break: break-word;
+  max-height: 220px; overflow-y: auto;
+}
+
+.fix {
+  background: var(--bg-base); border: 1px solid var(--border-muted);
+  border-left: 3px solid var(--green); border-radius: var(--radius);
+  padding: 13px 14px; margin-bottom: 8px;
+}
+.fix .fix-title { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+.fix .fix-for { font-size: 11.5px; color: var(--text-faint); margin-bottom: 7px; }
+.fix .fix-why { font-size: 12.5px; color: var(--text-muted); line-height: 19px; }
+.fix pre {
+  background: var(--bg-deep); border: 1px solid var(--border-muted);
+  border-radius: var(--radius-sm); padding: 9px 11px; margin-top: 8px;
+  font-family: var(--mono); font-size: 11px; line-height: 16px;
+  color: var(--text-muted); white-space: pre-wrap; word-break: break-word;
+  max-height: 220px; overflow-y: auto;
+}
+.fix .copy-btn { margin-top: 8px; }
+
 /* ── Toolbox setup ───────────────────────────────────────── */
 .setup-box {
   display: flex; flex-direction: column; gap: 1px; margin-bottom: 14px;

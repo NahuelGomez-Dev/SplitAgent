@@ -234,6 +234,10 @@ class DesktopApp:
         except Exception as exc:
             self._push({"type": "error", "agent": "core", "data": {"text": f"report: {exc}"}})
         self.report_paths = report_paths
+        # A finished audit is the signal that the operator has found their feet,
+        # which is what promotes ``experience: auto`` to the full interface.
+        self.global_config.ui.audits_completed += 1
+        save_global_config(self.global_config)
         self._emit(
             [
                 {

@@ -160,13 +160,41 @@ splitagent config set model anthropic/claude-3.5-sonnet
 splitagent desktop            # or: splitagent run --desktop
 ```
 
-Two modes, switched from the titlebar:
+Two work modes, switched from the titlebar:
 
 - **Audit** — the autonomous Red vs Blue run.
 - **Copilot** — a conversational assistant that helps you *do* the pentest:
   plan the engagement, explain a vulnerability, inspect the target with the
   full toolset, draft payloads, firewall rules or patches, and interpret
   findings. It keeps the conversation history and streams its reasoning.
+
+### Two interfaces for two audiences
+
+The same engine, presented two ways. Switch any time in **Settings → General**,
+and the choice is remembered.
+
+| | **Simple** | **Developer** |
+| --- | --- | --- |
+| Who it is for | someone who is not a security engineer | a pentester or developer |
+| Result panel | **Results** — one plain-language summary | **Findings** — full technical list |
+| Wording | "This page runs code that comes from the visitor" | the raw finding title and payload |
+| Severity | Fix today / Fix this week / Plan a fix / Nice to have | CRITICAL / HIGH / MEDIUM / LOW and CVSS |
+| Extras | a plain **% of what was tested is protected** | context meter, event count |
+| Panels | Results, What to fix, Report | + Mitigations, Trace, Activity |
+| Controls | one button: **Check my site** | run, rounds, sandbox, provider and tuning |
+
+The simple interface still shows the evidence, the CVSS vector and the patch,
+just folded behind a click, so nothing is hidden from a curious user.
+
+On a **first run** the app picks Simple automatically. Once an audit has been
+completed — or the moment you choose explicitly — it promotes itself to
+Developer, which is what a returning user wants without having to configure it.
+
+```yaml
+# ~/.splitagent/config.yaml
+ui:
+  experience: auto   # auto | guided | developer
+```
 
 The **guided setup** asks a few questions before running (target kind →
 address and scope → sandbox or existing target → optional credentials →

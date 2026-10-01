@@ -62,14 +62,14 @@
               <button class="mini-btn accent" id="btn-wizard">New audit</button>
               <button class="mini-btn" id="btn-project">Advanced…</button>
             </div>
-            <div class="side-label ws-label">Workspace</div>
-            <button class="workspace-card" id="btn-workspace" title="Open the agents' working directory">
+            <div class="side-label ws-label dev-only">Workspace</div>
+            <button class="workspace-card dev-only" id="btn-workspace" title="Open the agents' working directory">
               <svg viewBox="0 0 16 16"><path d="M1.5 4.5h5l1.2 1.5h6.8v6.5h-13z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
               <span class="ws-name" id="ws-name">splitagent-workspace</span>
               <span class="ws-badge" id="ws-badge">—</span>
             </button>
-            <div class="side-label ws-label">Environment</div>
-            <button class="workspace-card" id="btn-toolbox" title="Isolated execution environment">
+            <div class="side-label ws-label dev-only">Environment</div>
+            <button class="workspace-card dev-only" id="btn-toolbox" title="Isolated execution environment">
               <svg viewBox="0 0 16 16"><path d="M2 5.5h12v7H2z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M6 5.5V4a2 2 0 0 1 4 0v1.5" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
               <span class="ws-name" id="tb-name">toolbox</span>
               <span class="ws-badge" id="tb-badge">—</span>
@@ -100,13 +100,24 @@
               <div class="empty-mark">
                 <svg viewBox="0 0 24 24"><path d="M12 2.2 20.5 7v10L12 21.8 3.5 17V7L12 2.2Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M12 2.2V21.8" stroke="var(--red)" stroke-width="1.4"/></svg>
               </div>
-              <h1>Purple-team your target</h1>
-              <p>The <b class="red">Red Agent</b> maps the attack surface and proves weaknesses with
-                 non-destructive evidence. The <b class="blue">Blue Agent</b> detects the activity,
-                 applies countermeasures and verifies them.</p>
-              <button class="btn primary big" id="empty-start">Start guided setup</button>
-              <p class="muted">A few questions about the target and the system does the rest.
-                 Prefer to ask first? Switch to <b>Copilot</b>.</p>
+              <!-- Simple experience -->
+              <div class="exp-only" data-exp="guided">
+                <h1>Check your website for problems</h1>
+                <p>Two assistants work together: one looks for weaknesses the way an
+                   attacker would, the other suggests how to fix them.</p>
+                <button class="btn primary big" id="empty-start-guided">Start a check</button>
+                <p class="muted">It asks three short questions and does the rest.</p>
+              </div>
+              <!-- Developer experience -->
+              <div class="exp-only" data-exp="developer">
+                <h1>Purple-team your target</h1>
+                <p>The <b class="red">Red Agent</b> maps the attack surface and proves weaknesses with
+                   non-destructive evidence. The <b class="blue">Blue Agent</b> detects the activity,
+                   applies countermeasures and verifies them.</p>
+                <button class="btn primary big" id="empty-start">Start guided setup</button>
+                <p class="muted">A few questions about the target and the system does the rest.
+                   Prefer to ask first? Switch to <b>Copilot</b>.</p>
+              </div>
             </div>
           </div>
 
@@ -130,15 +141,17 @@
                   <svg viewBox="0 0 12 12" class="chev"><path d="M3 5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
                 </button>
                 <div class="spacer"></div>
-                <label class="chip" title="Run in a disposable Docker container">
-                  <input type="checkbox" id="opt-sandbox" /> Sandbox
-                </label>
-                <label class="chip num" title="Red/Blue rounds">
-                  <span>rounds</span>
-                  <input type="number" id="opt-rounds" min="1" max="10" value="3" />
-                </label>
-                <button class="btn ghost" id="btn-guided">Guided</button>
-                <button class="btn primary" id="btn-run">Run audit</button>
+                <span class="dev-only-inline" data-exp="developer">
+                  <label class="chip" title="Run in a disposable Docker container">
+                    <input type="checkbox" id="opt-sandbox" /> Sandbox
+                  </label>
+                  <label class="chip num" title="Red/Blue rounds">
+                    <span>rounds</span>
+                    <input type="number" id="opt-rounds" min="1" max="10" value="3" />
+                  </label>
+                </span>
+                <button class="btn ghost" id="btn-guided" data-exp="developer">Guided</button>
+                <button class="btn primary" id="btn-run"><span data-exp="developer">Run audit</span><span data-exp="guided">Check my site</span></button>
                 <button class="btn danger hidden" id="btn-stop">Stop</button>
               </div>
             </div>
@@ -186,14 +199,26 @@
 
       <!-- Review panel -->
       <aside class="review">
-        <div class="review-tabs">
-          <button class="rtab active" data-tab="findings">Findings <span class="count" id="count-findings">0</span></button>
-          <button class="rtab" data-tab="mitigations">Mitigations <span class="count" id="count-mitigations">0</span></button>
-          <button class="rtab" data-tab="report">Report</button>
-          <button class="rtab" data-tab="trace">Trace</button>
-          <button class="rtab" data-tab="activity">Activity</button>
+        <div class="review-tabs" id="review-tabs">
+          <!-- Simple experience: one panel that says what it all means. -->
+          <button class="rtab active" data-tab="results" data-exp="guided">Results</button>
+          <button class="rtab" data-tab="fixes" data-exp="guided">What to fix</button>
+          <button class="rtab" data-tab="report" data-exp="guided">Report</button>
+
+          <!-- Developer experience: the full cockpit. -->
+          <button class="rtab active" data-tab="findings" data-exp="developer">Findings <span class="count" id="count-findings">0</span></button>
+          <button class="rtab" data-tab="mitigations" data-exp="developer">Mitigations <span class="count" id="count-mitigations">0</span></button>
+          <button class="rtab" data-tab="report" data-exp="developer">Report</button>
+          <button class="rtab" data-tab="trace" data-exp="developer">Trace</button>
+          <button class="rtab" data-tab="activity" data-exp="developer">Activity</button>
         </div>
         <div class="review-body">
+          <div class="rpanel active" id="panel-results">
+            <div class="panel-empty">Run an audit to see the results here.</div>
+          </div>
+          <div class="rpanel" id="panel-fixes">
+            <div class="panel-empty">Fixes appear here once the audit finds something.</div>
+          </div>
           <div class="rpanel active" id="panel-findings">
             <div class="panel-empty">No findings yet.</div>
           </div>
@@ -442,6 +467,21 @@
       <section class="spanel" id="spanel-general">
         <div class="spanel-head"><h2 class="spanel-title">General</h2></div>
         <div class="spanel-body">
+          <div class="s-section">
+            <div class="s-section-title">Interface</div>
+            <div class="experience-picker" id="experience-picker">
+              <button class="exp-card" data-exp="guided">
+                <svg viewBox="0 0 20 20"><path d="M10 2.5 17 6.5v7L10 17.5 3 13.5v-7z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="m7 10 2 2 4-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+                <b>Simple</b>
+                <span>Plain language, one step at a time. For anyone who is not a security engineer.</span>
+              </button>
+              <button class="exp-card" data-exp="developer">
+                <svg viewBox="0 0 20 20"><path d="m7 6-4 4 4 4M13 6l4 4-4 4M11.5 4l-3 12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                <b>Developer</b>
+                <span>Full cockpit: live stream, trace, raw tool output, providers and tuning.</span>
+              </button>
+            </div>
+          </div>
           <div class="s-section">
             <div class="s-section-title">Inference</div>
             <div class="form-grid">

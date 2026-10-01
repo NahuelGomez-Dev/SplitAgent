@@ -786,6 +786,290 @@ function updateContextMeter() {
   el.className = "st " + (ctx.percent >= 90 ? "warn" : ctx.percent >= 70 ? "mid" : "");
 }
 
+/* ── Guided mode: say it in plain language ──────────────────
+   A non-technical operator does not need "CVSS:3.1/AV:N/AC:L…" or "TA0001".
+   They need: what is wrong, how bad, what it means, and what to do. This
+   layer rewrites the technical finding into that, and keeps the raw detail
+   one click away underneath. */
+
+const SEVERITY_PLAIN = {
+  critical: {
+    label: "Fix today",
+    color: "var(--red-strong)",
+    dot: "var(--red-strong)",
+    order: 0,
+    blurb: "Someone on the internet can take over or steal data right now.",
+  },
+  high: {
+    label: "Fix this week",
+    color: "var(--orange)",
+    dot: "var(--orange)",
+    order: 1,
+    blurb: "A real weakness that is likely to be abused soon.",
+  },
+  medium: {
+    label: "Plan a fix",
+    color: "var(--yellow)",
+    dot: "var(--yellow)",
+    order: 2,
+    blurb: "Worth fixing, but not an emergency.",
+  },
+  low: {
+    label: "Nice to have",
+    color: "var(--green)",
+    dot: "var(--green)",
+    order: 3,
+    blurb: "A small improvement or a good hygiene habit.",
+  },
+  info: {
+    label: "For your notes",
+    color: "var(--cyan)",
+    dot: "var(--cyan)",
+    order: 4,
+    blurb: "Information, not a problem in itself.",
+  },
+};
+
+function plainSeverity(severity) {
+  return SEVERITY_PLAIN[(severity || "info").toLowerCase()] || SEVERITY_PLAIN.info;
+}
+
+/* The model writes technical titles. Map the common categories to a sentence
+   a non-specialist understands. Anything unmapped keeps the original title,
+   which is still clearer than hiding it. */
+const PLAIN_CATEGORIES = {
+  sql_injection: {
+    what: "Someone can read or change your database through this page",
+    means: "Attackers can steal customer records, passwords or change data.",
+  },
+  reflected_xss: {
+    what: "This page runs code that comes from the visitor",
+    means: "An attacker can trick a user into running malicious code in their browser.",
+  },
+  xss: {
+    what: "This page runs code that comes from the visitor",
+    means: "An attacker can trick a user into running malicious code in their browser.",
+  },
+  path_traversal: {
+    what: "Someone can read files that should be private",
+    means: "Server files, including configuration with passwords, may be readable.",
+  },
+  command_injection: {
+    what: "Someone can run commands on the server",
+    means: "The server can be taken over completely.",
+  },
+  open_redirect: {
+    what: "The site can be used to send people to fake pages",
+    means: "Useful for phishing that looks like it comes from your domain.",
+  },
+  cors_misconfiguration: {
+    what: "Other websites can read your users' data",
+    means: "A malicious site could act as a logged-in user.",
+  },
+  information_disclosure: {
+    what: "The server reveals details it should keep private",
+    means: "Version numbers and internal pages help an attacker plan an attack.",
+  },
+  headers: {
+    what: "Important browser protections are switched off",
+    means: "Browsers cannot block common attacks such as clickjacking.",
+  },
+  misconfiguration: {
+    what: "A server setting is left in an unsafe state",
+    means: "It widens what an attacker can reach or learn.",
+  },
+  vulnerable_software: {
+    what: "The server runs an outdated program",
+    means: "Published attacks already exist for this version.",
+  },
+  default_credentials: {
+    what: "A service still accepts its default password",
+    means: "Anyone who finds the service can log in.",
+  },
+};
+
+function plainFinding(data) {
+  const category = (data.category || "").toLowerCase();
+  const known = PLAIN_CATEGORIES[category];
+  const severity = plainSeverity(data.severity);
+  return {
+    what: known ? known.what : (data.title || "Something worth checking"),
+    means: known ? known.means : "",
+    title: data.title || "",
+    where: data.endpoint || data.target || "",
+    severity,
+    category,
+  };
+}
+
+function renderGuidedResults() {
+  const panel = $("#panel-results");
+  if (!panel) return;
+
+  if (!state.findings.length) {
+    panel.innerHTML =
+      '<div class="panel-empty">Run an audit to see the results here.</div>';
+    return;
+  }
+
+  const buckets = {};
+  state.findings.forEach((f) => {
+    const sev = (f.severity || "info").toLowerCase();
+    (buckets[sev] = buckets[sev] || []).push(f);
+  });
+
+  const resilience = Math.round(state.resilience);
+  const counts = Object.entries(buckets)
+    .map(([sev, items]) => `${items.length} ${plainSeverity(sev).label.toLowerCase()}`)
+    .join(", ");
+
+  const worst = ["critical", "high", "medium", "low", "info"].find((s) => buckets[s]);
+  const heroClass =
+    worst === "critical" ? "bad" : worst === "high" ? "warn" : worst === "medium" ? "warn" : "ok";
+  const heroTitle =
+    worst === "critical"
+      ? "There are problems that need attention today"
+      : worst === "high"
+        ? "There are real problems to fix soon"
+        : worst === "medium"
+          ? "A few things are worth fixing"
+          : "Nothing serious was found";
+
+  const groups = Object.keys(buckets)
+    .sort((a, b) => plainSeverity(a).order - plainSeverity(b).order)
+    .map((sev) => {
+      const meta = plainSeverity(sev);
+      const cards = buckets[sev]
+        .map((f) => {
+          const plain = plainFinding(f);
+          const detail = [];
+          if (f.description) detail.push(`<dt>Details</dt><dd>${escapeHtml(f.description)}</dd>`);
+          if (f.recommendation)
+            detail.push(`<dt>What to do</dt><dd>${escapeHtml(f.recommendation)}</dd>`);
+          if (f.evidence)
+            detail.push(`<dt>Evidence</dt><dd><pre>${escapeHtml(f.evidence)}</pre></dd>`);
+          if (f.cvss_score)
+            detail.push(
+              `<dt>Technical score</dt><dd>CVSS ${f.cvss_score.toFixed(1)} ${escapeHtml(f.cvss_vector || "")}</dd>`
+            );
+          return `
+            <div class="issue">
+              <div class="issue-head">
+                <svg class="issue-icon" viewBox="0 0 20 20" style="color:${meta.color}">
+                  <circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.4"/>
+                  <path d="M10 6.2v5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                  <circle cx="10" cy="13.6" r="0.9" fill="currentColor"/>
+                </svg>
+                <div style="flex:1;min-width:0">
+                  <div class="issue-title">${escapeHtml(plain.what)}</div>
+                  ${plain.where ? `<div class="issue-where">${escapeHtml(plain.where)}</div>` : ""}
+                </div>
+              </div>
+              ${plain.means ? `<div class="issue-why">${escapeHtml(plain.means)}</div>` : ""}
+              ${detail.length ? `<div class="issue-detail"><dl>${detail.join("")}</dl></div>` : ""}
+            </div>`;
+        })
+        .join("");
+      return `
+        <div class="guided-group">
+          <div class="guided-group-title" style="color:${meta.color}">
+            <span class="sev-dot" style="background:${meta.dot}"></span>
+            ${meta.label} · ${buckets[sev].length}
+          </div>
+          ${meta.blurb ? `<div class="issue-why" style="margin:-2px 0 10px 16px;font-size:12px">${escapeHtml(meta.blurb)}</div>` : ""}
+          ${cards}
+        </div>`;
+    })
+    .join("");
+
+  panel.innerHTML = `
+    <div class="guided-hero ${heroClass}">
+      <div class="gh-title">${heroTitle}</div>
+      <div class="guided-score">
+        <b style="color:${plainSeverity(worst).color}">${resilience}<span style="font-size:16px">%</span></b>
+        <span>of what was tested is already protected</span>
+      </div>
+      <div class="gh-sub">${escapeHtml(counts || "no issues found")}.</div>
+    </div>
+    ${groups}`;
+
+  panel.querySelectorAll(".issue").forEach((el) =>
+    el.addEventListener("click", () => el.classList.toggle("open"))
+  );
+}
+
+function renderGuidedFixes() {
+  const panel = $("#panel-fixes");
+  if (!panel) return;
+  if (!state.mitigations.length) {
+    panel.innerHTML =
+      '<div class="panel-empty">Fixes appear here once the audit finds something.</div>';
+    return;
+  }
+  const findingTitle = (id) => {
+    const f = state.findingIndex && state.findingIndex[id];
+    return f ? plainFinding(f).what : "";
+  };
+  panel.innerHTML = state.mitigations
+    .map((m) => {
+      const forWhat = findingTitle(m.finding_id);
+      return `
+        <div class="fix">
+          <div class="fix-title">${escapeHtml(m.title || "Fix")}</div>
+          ${forWhat ? `<div class="fix-for">For: ${escapeHtml(forWhat)}</div>` : ""}
+          ${m.description ? `<div class="fix-why">${escapeHtml(m.description)}</div>` : ""}
+          ${m.content ? `<pre>${escapeHtml(m.content)}</pre>` : ""}
+        </div>`;
+    })
+    .join("");
+}
+
+function markExperience() {
+  const current = state.experience === "guided" ? "guided" : "developer";
+  $$("#experience-picker .exp-card").forEach((card) =>
+    card.classList.toggle("active", card.dataset.exp === current)
+  );
+}
+
+function applyExperience(developer) {
+  state.developerMode = developer;
+  document.body.dataset.experience = developer ? "developer" : "guided";
+
+  // The tab strip only shows the buttons that belong to this experience.
+  const tabs = $$("#review-tabs .rtab");
+  let firstVisible = null;
+  tabs.forEach((tab) => {
+    const wanted = tab.dataset.exp === (developer ? "developer" : "guided");
+    tab.classList.toggle("hidden", !wanted);
+    if (wanted && !firstVisible) firstVisible = tab;
+  });
+
+  const panels = $$(".rpanel");
+  panels.forEach((p) => p.classList.remove("active"));
+  // Developer panels already in the DOM; guided ones are rendered from state.
+  const defaultTab = developer ? "findings" : "results";
+  const button = tabs.find((t) => t.dataset.tab === defaultTab && !t.classList.contains("hidden"));
+  if (button) button.classList.add("active");
+  const panel = $("#panel-" + defaultTab);
+  if (panel) panel.classList.add("active");
+
+  // Elements tagged with data-exp are handled by CSS via the body attribute,
+  // so only the untagged developer extras need toggling here.
+  ["#st-context", "#st-events"].forEach((sel) =>
+    $$(sel).forEach((el) => el.classList.toggle("hidden", !developer))
+  );
+  $$(".dev-only").forEach((el) => el.classList.toggle("hidden", !developer));
+  const modeSwitch = $("#mode-switch");
+  if (modeSwitch) {
+    // The copilot is useful to everyone, so it stays; only its label changes.
+    modeSwitch.classList.toggle("compact", !developer);
+  }
+
+  renderGuidedResults();
+  renderGuidedFixes();
+  markExperience();
+}
+
 /* ── panels ─────────────────────────────────────────────── */
 function addFinding(data) {
   state.findings.push(data);
@@ -802,10 +1086,14 @@ function addFinding(data) {
     <div class="f-sub">${escapeHtml(data.id || "")} · open</div>`;
   panel.appendChild(el);
   addInlineFinding(data);
+  state.findingIndex = state.findingIndex || {};
+  state.findingIndex[data.id] = data;
+  renderGuidedResults();
 }
 
 function addMitigation(data) {
   state.mitigations.push(data);
+  renderGuidedFixes();
   $("#count-mitigations").textContent = state.mitigations.length;
   const panel = $("#panel-mitigations");
   if ($(".panel-empty", panel)) $(".panel-empty", panel).remove();
@@ -850,6 +1138,9 @@ function setResilience(value) {
   state.resilience = value;
   $("#st-resilience").textContent = Math.round(value);
   $("#res-bar").style.width = `${Math.max(0, Math.min(100, value))}%`;
+  // The guided summary shows the same number in plain language, so it has to
+  // follow the status bar instead of going stale.
+  if (!state.developerMode) renderGuidedResults();
 }
 
 /* ── event handling ─────────────────────────────────────── */
@@ -1056,8 +1347,15 @@ function resetStream() {
   api("workspace_info").then((info) => {
     if (info && info.ok) renderWorkspace(info);
   });
+  state.findingIndex = {};
   $("#panel-findings").innerHTML = '<div class="panel-empty">No findings yet.</div>';
   $("#panel-mitigations").innerHTML = '<div class="panel-empty">No mitigations yet.</div>';
+  if (!state.developerMode) {
+    $("#panel-results").innerHTML =
+      '<div class="panel-empty">Run an audit to see the results here.</div>';
+    $("#panel-fixes").innerHTML =
+      '<div class="panel-empty">Fixes appear here once the audit finds something.</div>';
+  }
   $("#panel-activity").innerHTML = "";
   $("#panel-report").innerHTML = '<div class="panel-empty">The report is generated at the end of a run.</div>';
   $("#count-findings").textContent = "0";
@@ -1103,6 +1401,11 @@ function renderBootstrap(data) {
   $("#settings-path").textContent = data.config_path || "";
   $("#project-path").textContent = data.project_path || "";
 
+  // Which interface to show. The backend already applied the auto heuristic.
+  const ui = data.ui || {};
+  applyExperience(ui.developer_mode !== false);
+  state.experience = ui.experience || "auto";
+
   updateModelUI();
   renderTarget();
   renderSessions(data.sessions || []);
@@ -1110,18 +1413,28 @@ function renderBootstrap(data) {
   fillProjectForm();
   setRunning(!!data.running);
   setChatting(!!data.chatting);
-  refreshToolbox().then((status) => {
-    const exec = data.execution || {};
-    // Ask once: only when Docker exists and the operator has not decided yet.
-    if (status && status.docker_cli && !exec.installed && !status.image) {
-      openToolboxDialog();
-    }
-  });
+
+  // The toolbox dialog and provider setup are developer concerns. In the
+  // simple experience the defaults are chosen silently so the operator can
+  // just press Run.
+  if (state.developerMode) {
+    refreshToolbox().then((status) => {
+      const exec = data.execution || {};
+      if (status && status.docker_cli && !exec.installed && !status.image) {
+        openToolboxDialog();
+      }
+    });
+  }
 
   if (!data.configured) {
-    toast("Connect a provider to start", true);
+    toast(
+      state.developerMode
+        ? "Connect a provider to start"
+        : "One-time setup: choose the AI model to use",
+      true,
+    );
     openSettings();
-    openConnectProvider("");
+    if (state.developerMode) openConnectProvider("");
   }
 }
 
@@ -2042,8 +2355,25 @@ function wire() {
   $("#btn-guided").addEventListener("click", openWizard);
   $("#btn-wizard").addEventListener("click", openWizard);
   $("#empty-start").addEventListener("click", openWizard);
+  const emptyGuided = $("#empty-start-guided");
+  if (emptyGuided) emptyGuided.addEventListener("click", openWizard);
   $("#btn-export").addEventListener("click", exportReport);
   $("#btn-dump-trace").addEventListener("click", dumpTrace);
+  $$("#experience-picker .exp-card").forEach((card) =>
+    card.addEventListener("click", async () => {
+      const wanted = card.dataset.exp;
+      const res = await api("set_experience", wanted);
+      if (!res || !res.ok) {
+        toast((res && res.error) || "could not switch", true);
+        return;
+      }
+      state.experience = res.experience;
+      applyExperience(res.developer_mode);
+      markExperience();
+      toast(wanted === "guided" ? "Simple interface on" : "Developer interface on");
+    })
+  );
+
   $("#btn-workspace").addEventListener("click", openWorkspace);
   $("#btn-toolbox").addEventListener("click", openToolboxDialog);
   $("#tb-install").addEventListener("click", installToolbox);

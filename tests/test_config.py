@@ -53,6 +53,51 @@ def test_project_roundtrip(tmp_path):
     assert loaded.run.sandbox.enabled is False
 
 
+def test_experience_auto_is_guided_on_first_run():
+    from splitagent.config import UISettings
+
+    ui = UISettings()
+    assert ui.experience == "auto"
+    assert ui.developer_mode is False
+
+
+def test_experience_auto_promotes_after_an_audit():
+    from splitagent.config import UISettings
+
+    ui = UISettings()
+    ui.audits_completed = 1
+    assert ui.developer_mode is True
+
+
+def test_experience_auto_promotes_once_chosen():
+    from splitagent.config import UISettings
+
+    ui = UISettings()
+    ui.experience_chosen = True
+    assert ui.developer_mode is True
+
+
+def test_experience_explicit_values_win():
+    from splitagent.config import UISettings
+
+    assert UISettings(experience="guided").developer_mode is False
+    assert UISettings(experience="developer").developer_mode is True
+    # An explicit choice overrides the audit count.
+    forced = UISettings(experience="guided", audits_completed=10, experience_chosen=True)
+    assert forced.developer_mode is False
+
+
+def test_experience_round_trips(tmp_path):
+    from splitagent.config import GlobalConfig, UISettings
+
+    path = tmp_path / "config.yaml"
+    config = GlobalConfig(ui=UISettings(experience="guided", audits_completed=3))
+    save_global_config(config, path)
+    loaded = load_global_config(path)
+    assert loaded.ui.experience == "guided"
+    assert loaded.ui.audits_completed == 3
+
+
 def test_env_api_key(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "from-env")
     llm = LLMSettings(provider="openai")
