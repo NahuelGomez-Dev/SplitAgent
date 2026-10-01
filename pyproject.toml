@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "splitagent"
-version = "0.1.0"
+version = "0.0.1"
 description = "Autonomous dual-team (Purple Team) security framework powered by configurable LLM APIs."
 readme = "README.md"
 requires-python = ">=3.10"
