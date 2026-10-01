@@ -101,9 +101,50 @@ class Engine:
                 return
         self.toolbox = toolbox
 
+    def _target_is_external(self) -> bool:
+        """True when the engagement points at a real, non-local server.
+
+        The sandbox exists to *provide* a disposable target. When the operator
+        has already given one - a domain, a public IP, a reachable host - the
+        sandbox would substitute the wrong thing: it would spin up Juice Shop
+        and audit that instead of the server they asked about.
+        """
+        host = (self.project.target.effective_hosts() or [""])[0].lower()
+        if not host:
+            return False
+        if host in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
+            return False
+        try:
+            import ipaddress
+
+            address = ipaddress.ip_address(host)
+            return not (address.is_loopback or address.is_private or address.is_link_local)
+        except ValueError:
+            pass
+        # A hostname that is not a loopback alias is an external target.
+        return not host.endswith(".local")
+
     async def _start_sandbox(self) -> None:
         if not self.project.run.sandbox.enabled:
             await self.bus.emit(Event(type="log", agent="core", data={"text": "Sandbox disabled."}))
+            return
+        if self._target_is_external():
+            # Auditing a real server: never start the lab container.
+            self._sandbox_status = None
+            await self.bus.emit(
+                Event(
+                    type="log",
+                    agent="core",
+                    data={
+                        "text": (
+                            f"Target {self.project.target.effective_hosts()[0]} is a real "
+                            "server, so no sandbox is started. Disable run.sandbox to "
+                            "silence this."
+                        ),
+                        "level": "info",
+                    },
+                )
+            )
             return
         status = await self.sandbox.up()
         self._sandbox_status = status

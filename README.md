@@ -424,6 +424,67 @@ session and surfaced in the UI as a collapsible **task dock**.
 
 ---
 
+## Real servers, not just labs
+
+SplitAgent audits **any reachable host**: a production web app, an API, a
+public IP, an internal range. The sandbox is a convenience for practising, not
+a requirement.
+
+```bash
+splitagent init --url https://your-server.example.com -y
+splitagent run
+```
+
+Pointing at a real server used to be a trap: `init` left the sandbox enabled,
+so the run would spin up a Juice Shop container and audit *that* instead of
+your server. It now detects the difference and configures itself:
+
+| Target | Sandbox | Network |
+| --- | --- | --- |
+| `example.com`, `api.example.com` | **off** | allowed |
+| `93.184.216.34` (public IP) | **off** | allowed |
+| `localhost`, `127.0.0.1` | on | scope-bound |
+| `192.168.x.x`, `10.x.x.x` | on | scope-bound |
+
+The engine enforces the same rule at run time, so even a hand-edited config
+cannot make it audit a container instead of the host you asked for. Verified
+against a live internet target:
+
+```text
+target=scanme.nmap.org
+  external detected      : True
+  docker 'up' launched   : False
+```
+
+A full agent audit of `scanme.nmap.org` (a real, internet-reachable host):
+
+```text
+tools used : dns_lookup, port_scan, run_tool, check_tool,
+             record_finding, workspace_write, todo…
+findings   : Outdated Apache httpd 2.4.7 (Ubuntu)     CVSS 6.5
+             Outdated OpenSSH 6.6.1p1 (Ubuntu)        CVSS 5.3
+             Service version banner disclosure        CVSS 5.3
+```
+
+### Scope enforcement
+
+`target.scope` is the authorisation list. Any tool that reaches a host outside
+it raises `ScopeError` and the run continues with the rest:
+
+```yaml
+target:
+  url: https://app.example.com
+  scope: [app.example.com]        # only these hosts may be touched
+  out_of_scope: [admin.example.com]
+run:
+  allow_network: true             # required for non-local targets
+```
+
+Set `run.allow_network: false` to hard-confine a run to `target.scope`, which
+is what a lab or a segmented engagement wants.
+
+---
+
 ## Isolated toolbox (recommended)
 
 The agents install and run their security tooling **inside a disposable Docker

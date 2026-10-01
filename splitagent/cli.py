@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 from pathlib import Path
+from typing import Any
 
 from rich.console import Console
 from rich.panel import Panel
@@ -174,8 +176,23 @@ def cmd_init(args: argparse.Namespace) -> int:
             ["localhost"] if project.target.url else []
         )
 
+    # A real server must not be audited through a lab container.
+    external = _is_external_target(project.target)
+    if external:
+        project.run.sandbox.enabled = False
+        project.run.allow_network = True
+
     saved = save_project_config(project, path)
     console.print(f"[{t.GREEN}]Project written to[/] {saved}")
+    if external:
+        console.print(
+            Text(
+                f"Target {project.target.effective_hosts()[0]} looks like a real "
+                "server: the Docker sandbox is off and scope enforcement is "
+                "managed through target.scope.",
+                style=t.MUTED,
+            )
+        )
     console.print(
         Text(
             "Next: `splitagent config setup` (once) then `splitagent run`.",
@@ -183,6 +200,24 @@ def cmd_init(args: argparse.Namespace) -> int:
         )
     )
     return 0
+
+
+def _is_external_target(target: Any) -> bool:
+    """True when the target is a real host rather than a local lab."""
+    hosts = target.effective_hosts()
+    if not hosts:
+        return False
+    host = hosts[0].lower()
+    if host in ("localhost", "127.0.0.1", "::1", "0.0.0.0", "host.docker.internal"):
+        return False
+    try:
+        import ipaddress
+
+        address = ipaddress.ip_address(host)
+        return not (address.is_loopback or address.is_private or address.is_link_local)
+    except ValueError:
+        pass
+    return not host.endswith((".local", ".test", ".internal"))
 
 
 def cmd_config(args: argparse.Namespace) -> int:
@@ -621,10 +656,22 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _force_utf8() -> None:
+    """Make the console survive the model's unicode output on Windows.
+
+    Reports and summaries contain arrows, box-drawing and accented characters;
+    a cp1252 console would raise UnicodeEncodeError on them.
+    """
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.reconfigure(encoding="utf-8", errors="replace")
         except (AttributeError, ValueError):  # pragma: no cover
+            pass
+    if os.name == "nt":  # pragma: no cover - platform specific
+        try:
+            import ctypes
+
+            ctypes.windll.kernel32.SetConsoleOutputCP(65001)  # UTF-8
+        except Exception:
             pass
 
 
