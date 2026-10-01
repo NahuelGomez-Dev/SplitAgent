@@ -55,7 +55,14 @@ async def get_client(
     timeout: float = 15.0,
     headers: dict[str, str] | None = None,
 ) -> httpx.AsyncClient:
-    """Return a pooled client for the given transport policy."""
+    """Return a pooled client for the given transport policy.
+
+    The headers become the client's defaults. Callers must NOT pass the same
+    headers per-request: httpx appends request headers to the client defaults,
+    which would send each one twice and the server would reject the request as
+    having conflicting headers. Use :func:`request_headers` to get the extras
+    that still need to be added (a per-call override such as ``Origin``).
+    """
     key = _key(follow, verify, timeout, headers)
     client = _CLIENTS.get(key)
     if client is not None and not client.is_closed:
@@ -74,6 +81,20 @@ async def get_client(
         )
         _CLIENTS[key] = client
         return client
+
+
+def request_headers(
+    client: httpx.AsyncClient, overrides: dict[str, str] | None = None
+) -> dict[str, str]:
+    """Return only the headers a caller must add on top of the client defaults.
+
+    Anything already present as a client default is dropped, so a request never
+    carries the same header twice.
+    """
+    if not overrides:
+        return {}
+    defaults = {name.lower() for name in client.headers}
+    return {name: value for name, value in overrides.items() if name.lower() not in defaults}
 
 
 async def aclose_all() -> None:

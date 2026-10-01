@@ -392,7 +392,13 @@ class LLMClient:
                     except json.JSONDecodeError:
                         continue
                     etype = event.get("type")
-                    if etype == "content_block_start":
+                    if etype == "message_start":
+                        # Anthropic reports the input token count here, not in
+                        # message_delta; without this the prompt side of the
+                        # usage was always missing.
+                        start_usage = (event.get("message") or {}).get("usage") or {}
+                        usage.update(start_usage)
+                    elif etype == "content_block_start":
                         block = event.get("content_block") or {}
                         if block.get("type") == "tool_use":
                             current_tool = {

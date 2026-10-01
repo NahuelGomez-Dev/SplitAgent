@@ -11,7 +11,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 
 from splitagent.tools.base import Tool, ToolContext
-from splitagent.tools.http_pool import get_client
+from splitagent.tools.http_pool import get_client, request_headers
 
 SECURITY_HEADERS = {
     "strict-transport-security": "HSTS not set: TLS downgrade/stripping possible.",
@@ -83,10 +83,12 @@ async def _request(
     merged_headers = ctx.auth_headers()
     merged_headers.update(headers or {})
     client = await get_client(follow=follow, verify=False, timeout=15.0, headers=merged_headers)
+    # The client already carries merged_headers as defaults; sending them again
+    # would duplicate every header.
     response = await client.request(
         method.upper(),
         url,
-        headers=merged_headers,
+        headers=request_headers(client, headers),
         params=params,
         data=data,
     )

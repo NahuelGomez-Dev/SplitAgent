@@ -222,16 +222,22 @@ def cmd_config(args: argparse.Namespace) -> int:
         console.print(f"[{t.GREEN}]Set llm.{args.key} - saved to {path}[/]")
         return 0
     if action == "preset":
+        # Accept both `config preset deepseek` and `config preset --provider deepseek`.
+        provider = args.provider or args.key
+        if not provider:
+            console.print(
+                f"[{t.RED}]Usage: splitagent config preset <provider>[/]\n"
+                f"[{t.MUTED}]Known: {', '.join(PROVIDER_PRESETS)}[/]"
+            )
+            return 1
         config = load_global_config()
         try:
-            apply_provider_preset(config.llm, args.provider)
+            apply_provider_preset(config.llm, provider)
         except SplitAgentError as exc:
             console.print(f"[{t.RED}]{exc}[/]")
             return 1
         path = save_global_config(config)
-        console.print(
-            f"[{t.GREEN}]Provider set to {args.provider} ({config.llm.base_url}) - {path}[/]"
-        )
+        console.print(f"[{t.GREEN}]Provider set to {provider} ({config.llm.base_url}) - {path}[/]")
         return 0
     console.print(f"[{t.RED}]Unknown config action '{action}'[/]")
     return 1
