@@ -11,6 +11,7 @@ const state = {
   mode: "audit",
   round: 0,
   totalRounds: 0,
+  rounds: [],
   phase: "idle",
   resilience: 100,
   events: 0,
@@ -21,6 +22,7 @@ const state = {
   thinking: { red: "", blue: "", assistant: "" },
   runningTools: { red: 0, blue: 0, assistant: 0 },
   toolLog: { red: [], blue: [], assistant: [] },
+  chatTurns: 0,
   models: [],
   modelsLoaded: false,
   palette: { items: [], index: 0, filtered: [], onPick: null },
@@ -44,11 +46,23 @@ window.addEventListener("error", (e) =>
 );
 window.addEventListener("unhandledrejection", (e) => reportJsError(`unhandled: ${e.reason}`));
 
+// Drives the live response timers.
+setInterval(() => {
+  Object.keys(state.currentMsg || {}).forEach((agent) => {
+    const wrap = state.currentMsg[agent];
+    if (!wrap) return;
+    const el = wrap.querySelector(".msg-timer");
+    if (!el || !el.classList.contains("running")) return;
+    const seconds = (Date.now() - Number(el.dataset.start || Date.now())) / 1000;
+    el.textContent = `Thinking… ${seconds.toFixed(1)}s`;
+  });
+}, 100);
+
 const AGENTS = {
-  red: { name: "Red Agent", initial: "R", cls: "red" },
-  blue: { name: "Blue Agent", initial: "B", cls: "blue" },
-  assistant: { name: "Copilot", initial: "C", cls: "accent" },
-  core: { name: "System", initial: "S", cls: "core" },
+  red: { name: "Red Agent", cls: "red" },
+  blue: { name: "Blue Agent", cls: "blue" },
+  assistant: { name: "Copilot", cls: "accent" },
+  core: { name: "System", cls: "core" },
 };
 
 /* ── bridge ─────────────────────────────────────────────── */
@@ -138,6 +152,23 @@ function setMode(mode) {
   $("#st-mode").textContent = mode;
 }
 
+/* ── pinned activity feed ───────────────────────────────────
+   The Thinking / Exploring / working hints must always sit at the bottom of
+   the stream, right under the latest content, instead of scrolling away above
+   a long message. We keep one sticky container per stream and park the
+   activity lines in it. */
+function activityHostFor(agent) {
+  const stream = streamFor(agent);
+  let host = stream.querySelector(".activity-host");
+  if (!host) {
+    host = document.createElement("div");
+    host.className = "activity-host";
+    stream.appendChild(host);
+  }
+  stream.appendChild(host); // hoist to the very end
+  return host;
+}
+
 /* ── stream routing ─────────────────────────────────────── */
 function streamFor(agent) {
   return agent === "assistant" ? $("#chat-stream") : $("#stream");
@@ -170,7 +201,6 @@ function ensureMsg(agent) {
   wrap.className = "msg";
   wrap.innerHTML = `
     <div class="msg-head">
-      <div class="avatar ${meta.cls}">${meta.initial}</div>
       <span class="msg-name ${meta.cls}">${meta.name}</span>
       <span class="msg-time">${nowTime()}</span>
     </div>
@@ -178,6 +208,7 @@ function ensureMsg(agent) {
   streamFor(agent).appendChild(wrap);
   state.currentMsg[agent] = wrap;
   state.rawText[agent] = "";
+  startTimer(agent);
   return wrap;
 }
 
@@ -192,45 +223,61 @@ function finalize(agent) {
   const wrap = state.currentMsg[agent];
   if (!wrap) return;
   $(".msg-body", wrap).innerHTML = md(state.rawText[agent]);
+  stopTimer(agent);
   state.currentMsg[agent] = null;
   state.rawText[agent] = "";
 }
 
-/* OpenCode behaviour: while thinking, show a single shimmering line with the
-   latest thought. The full reasoning replaces it when the turn ends, or on
-   demand behind the toggle. Nothing floods the timeline. */
-function addThinking(agent, text) {
-  if (!text) return;
-  const parent = streamFor(agent);
-  const key = "thinking-" + agent;
-  let line = $("#" + key, parent);
+/* One activity line per agent. The screen must never fill with "Thinking" and
+   "Exploring" at once: a single line flips between them depending on what the
+   agent is doing right now. The full reasoning stays available behind the
+   chevron. */
+function setActivity(agent, mode, text) {
+  const host = activityHostFor(agent);
+  let line = $("#thinking-" + agent, host);
   if (!line) {
     line = document.createElement("div");
-    line.id = key;
+    line.id = "thinking-" + agent;
     line.className = "thinking-line";
     line.innerHTML = `
       <span class="tl-label">Thinking</span>
       <span class="tl-text shimmer"></span>
       <span class="tl-chevron">\u203a</span>`;
     line.addEventListener("click", () => {
-      const body = $("#thinking-body-" + agent, parent);
+      const body = $("#thinking-body-" + agent, host);
       if (!body) return;
       const shown = body.classList.toggle("show");
       line.querySelector(".tl-chevron").textContent = shown ? "\u203e" : "\u203a";
     });
     clearEmptyFor(agent);
-    parent.appendChild(line);
+    host.appendChild(line);
     const body = document.createElement("div");
     body.id = "thinking-body-" + agent;
     body.className = "thinking-body";
-    parent.appendChild(body);
+    host.appendChild(body);
   }
-  const heading = text.trim().split("\n").filter(Boolean).pop() || "Thinking";
-  $(".tl-text", line).textContent = heading.slice(-150);
-  state.thinking[agent] = (state.thinking[agent] || "") + text;
-  const body = $("#thinking-body-" + agent, parent);
-  if (body) body.textContent = state.thinking[agent];
+  const label = $(".tl-label", line);
+  const body = $(".tl-text", line);
+  label.textContent = mode;
+  label.classList.toggle("shimmer", true);
+  body.classList.toggle("shimmer", true);
+  if (text != null) body.textContent = text;
+  line.classList.add("busy");
+  line.dataset.mode = mode;
   scrollStream(agent);
+}
+
+function addThinking(agent, text) {
+  if (!text) return;
+  state.thinking[agent] = (state.thinking[agent] || "") + text;
+  // Keep the freshest line as the visible excerpt, and let Exploring win while
+  // tools are actually running.
+  const heading = text.trim().split("\n").filter(Boolean).pop() || "Thinking";
+  const running = (state.runningTools[agent] || 0) > 0;
+  setActivity(agent, running ? "Exploring" : "Thinking", running ? "running tools…" : heading.slice(-150));
+  const host = activityHostFor(agent);
+  const body = $("#thinking-body-" + agent, host);
+  if (body) body.textContent = state.thinking[agent];
 }
 
 function finalizeThinking(agent) {
@@ -238,10 +285,14 @@ function finalizeThinking(agent) {
   const parent = streamFor(agent);
   const line = $("#thinking-" + agent, parent);
   if (!line) return;
+  const host = parent.querySelector(".activity-host");
+  if (!host || !host.contains(line)) return;
   line.classList.remove("busy");
   $(".tl-label", line).textContent = "Thought";
-  const shimmer = line.querySelector(".tl-text");
-  if (shimmer) shimmer.classList.remove("shimmer");
+  const label = $(".tl-label", line);
+  const text = $(".tl-text", line);
+  if (label) label.classList.remove("shimmer");
+  if (text) text.classList.remove("shimmer");
   state.thinking[agent] = "";
 }
 
@@ -259,8 +310,8 @@ function toolVerb(name) {
 
 function updateRunSummary(agent) {
   clearEmptyFor(agent);
-  const parent = streamFor(agent);
-  let el = $("#run-summary-" + agent, parent);
+  const host = activityHostFor(agent);
+  let el = $("#run-summary-" + agent, host);
   if (!el) {
     el = document.createElement("div");
     el.id = "run-summary-" + agent;
@@ -273,14 +324,14 @@ function updateRunSummary(agent) {
       <span class="rs-chevron">\u203a</span>`;
     el.addEventListener("click", () => {
       el.classList.toggle("open");
-      const log = $("#rs-log-" + agent, parent);
+      const log = $("#rs-log-" + agent, host);
       if (log) log.classList.toggle("show", el.classList.contains("open"));
     });
-    parent.appendChild(el);
+    host.appendChild(el);
     const log = document.createElement("div");
     log.id = "rs-log-" + agent;
     log.className = "rs-log";
-    parent.appendChild(log);
+    host.appendChild(log);
   }
 
   const running = state.runningTools[agent] || 0;
@@ -294,12 +345,20 @@ function updateRunSummary(agent) {
     .map(([noun, n]) => `${n} ${noun}${n === 1 ? "" : "s"}`)
     .join(", ");
   const label = running > 0 ? "Exploring" : "Explored";
+  // When tools finish, the same activity line flips back to Thinking.
+  if (running === 0) {
+    const line = $("#thinking-" + agent, activityHostFor(agent));
+    if (line) {
+      $(".tl-label", line).textContent = "Thinking";
+      $(".tl-text", line).textContent = "considering next steps…";
+    }
+  }
 
   $(".rs-label", el).textContent = label;
   $(".rs-counts", el).textContent = summary ? " · " + summary : "";
   el.classList.toggle("busy", running > 0);
 
-  parent.scrollTop = parent.scrollHeight;
+  scrollStream(agent);
 }
 
 function addTool(agent, data) {
@@ -747,31 +806,43 @@ function toggleTodoDock() {
 function setWorking(agent, step, maxSteps) {
   state.working = state.working || {};
   state.working[agent] = { step, maxSteps };
-  const parent = streamFor(agent);
-  let line = $("#working-" + agent, parent);
-  if (!line) {
-    const hint = $("#thinking-" + agent, parent);
-    line = document.createElement("div");
-    line.id = "working-" + agent;
-    line.className = "thinking-line busy";
-    line.innerHTML = `
-      <span class="tl-label shimmer">Thinking</span>
-      <span class="tl-text">considering next steps…</span>`;
-    if (hint && hint.nextSibling) parent.insertBefore(line, hint);
-    else parent.appendChild(line);
-  }
-  const label = $(".tl-label", line);
+  // Reuse the single activity line; never stack a second one.
   const running = (state.runningTools[agent] || 0) > 0;
-  const text = running
-    ? "running tools…"
-    : "considering next steps…";
-  label.textContent = text === "running tools…" ? "Exploring" : "Thinking";
-  $(".tl-text", line).textContent = text;
+  setActivity(
+    agent,
+    running ? "Exploring" : "Thinking",
+    running ? "running tools…" : "considering next steps…"
+  );
 }
 
 function clearWorking(agent) {
-  const line = $("#working-" + agent, streamFor(agent));
-  if (line) line.remove();
+  // No separate working line exists any more; kept for call-site compatibility.
+  void agent;
+}
+
+/* ── response timer (Grok-style) ──────────────────────────
+   A small live counter under the header of the message that is currently
+   streaming: "Thinking… 3.4s" while it works, frozen to "+3.4s" when done. */
+function startTimer(agent) {
+  const wrap = state.currentMsg[agent];
+  if (!wrap) return;
+  const head = $(".msg-head", wrap);
+  if (!head || $(".msg-timer", head)) return;
+  const el = document.createElement("span");
+  el.className = "msg-timer running";
+  el.textContent = "Thinking… 0.0s";
+  el.dataset.start = Date.now();
+  head.appendChild(el);
+}
+
+function stopTimer(agent) {
+  const wrap = state.currentMsg[agent];
+  if (!wrap) return;
+  const el = $(".msg-timer", wrap);
+  if (!el) return;
+  const seconds = Math.max(0, (Date.now() - Number(el.dataset.start || Date.now())) / 1000);
+  el.classList.remove("running");
+  el.textContent = `+${seconds.toFixed(1)}s`;
 }
 
 function updateContextMeter() {
@@ -786,288 +857,135 @@ function updateContextMeter() {
   el.className = "st " + (ctx.percent >= 90 ? "warn" : ctx.percent >= 70 ? "mid" : "");
 }
 
-/* ── Guided mode: say it in plain language ──────────────────
-   A non-technical operator does not need "CVSS:3.1/AV:N/AC:L…" or "TA0001".
-   They need: what is wrong, how bad, what it means, and what to do. This
-   layer rewrites the technical finding into that, and keeps the raw detail
-   one click away underneath. */
+/* ── Dashboard: the at-a-glance result of the engagement ────
+   Rendered from live session state; no chart library, just CSS
+   bars and dots. It becomes the active tab when an audit ends. */
 
-const SEVERITY_PLAIN = {
-  critical: {
-    label: "Fix today",
-    color: "var(--red-strong)",
-    dot: "var(--red-strong)",
-    order: 0,
-    blurb: "Someone on the internet can take over or steal data right now.",
-  },
-  high: {
-    label: "Fix this week",
-    color: "var(--orange)",
-    dot: "var(--orange)",
-    order: 1,
-    blurb: "A real weakness that is likely to be abused soon.",
-  },
-  medium: {
-    label: "Plan a fix",
-    color: "var(--yellow)",
-    dot: "var(--yellow)",
-    order: 2,
-    blurb: "Worth fixing, but not an emergency.",
-  },
-  low: {
-    label: "Nice to have",
-    color: "var(--green)",
-    dot: "var(--green)",
-    order: 3,
-    blurb: "A small improvement or a good hygiene habit.",
-  },
-  info: {
-    label: "For your notes",
-    color: "var(--cyan)",
-    dot: "var(--cyan)",
-    order: 4,
-    blurb: "Information, not a problem in itself.",
-  },
+const SEVERITY_META = {
+  critical: { label: "Critical", color: "var(--red-strong)", order: 0 },
+  high: { label: "High", color: "var(--orange)", order: 1 },
+  medium: { label: "Medium", color: "var(--yellow)", order: 2 },
+  low: { label: "Low", color: "var(--green)", order: 3 },
+  info: { label: "Info", color: "var(--cyan)", order: 4 },
 };
 
-function plainSeverity(severity) {
-  return SEVERITY_PLAIN[(severity || "info").toLowerCase()] || SEVERITY_PLAIN.info;
+function severityMeta(severity) {
+  return SEVERITY_META[(severity || "info").toLowerCase()] || SEVERITY_META.info;
 }
 
-/* The model writes technical titles. Map the common categories to a sentence
-   a non-specialist understands. Anything unmapped keeps the original title,
-   which is still clearer than hiding it. */
-const PLAIN_CATEGORIES = {
-  sql_injection: {
-    what: "Someone can read or change your database through this page",
-    means: "Attackers can steal customer records, passwords or change data.",
-  },
-  reflected_xss: {
-    what: "This page runs code that comes from the visitor",
-    means: "An attacker can trick a user into running malicious code in their browser.",
-  },
-  xss: {
-    what: "This page runs code that comes from the visitor",
-    means: "An attacker can trick a user into running malicious code in their browser.",
-  },
-  path_traversal: {
-    what: "Someone can read files that should be private",
-    means: "Server files, including configuration with passwords, may be readable.",
-  },
-  command_injection: {
-    what: "Someone can run commands on the server",
-    means: "The server can be taken over completely.",
-  },
-  open_redirect: {
-    what: "The site can be used to send people to fake pages",
-    means: "Useful for phishing that looks like it comes from your domain.",
-  },
-  cors_misconfiguration: {
-    what: "Other websites can read your users' data",
-    means: "A malicious site could act as a logged-in user.",
-  },
-  information_disclosure: {
-    what: "The server reveals details it should keep private",
-    means: "Version numbers and internal pages help an attacker plan an attack.",
-  },
-  headers: {
-    what: "Important browser protections are switched off",
-    means: "Browsers cannot block common attacks such as clickjacking.",
-  },
-  misconfiguration: {
-    what: "A server setting is left in an unsafe state",
-    means: "It widens what an attacker can reach or learn.",
-  },
-  vulnerable_software: {
-    what: "The server runs an outdated program",
-    means: "Published attacks already exist for this version.",
-  },
-  default_credentials: {
-    what: "A service still accepts its default password",
-    means: "Anyone who finds the service can log in.",
-  },
-};
-
-function plainFinding(data) {
-  const category = (data.category || "").toLowerCase();
-  const known = PLAIN_CATEGORIES[category];
-  const severity = plainSeverity(data.severity);
-  return {
-    what: known ? known.what : (data.title || "Something worth checking"),
-    means: known ? known.means : "",
-    title: data.title || "",
-    where: data.endpoint || data.target || "",
-    severity,
-    category,
-  };
+function worstSeverity(findings) {
+  for (const sev of ["critical", "high", "medium", "low", "info"]) {
+    if (findings.some((f) => (f.severity || "info").toLowerCase() === sev)) return sev;
+  }
+  return null;
 }
 
-function renderGuidedResults() {
-  const panel = $("#panel-results");
+function renderDashboard() {
+  const panel = $("#panel-dashboard");
   if (!panel) return;
 
-  if (!state.findings.length) {
+  const findings = state.findings || [];
+  const mitigations = state.mitigations || [];
+
+  if (!findings.length && !(state.rounds || []).length && !state.running) {
     panel.innerHTML =
       '<div class="panel-empty">Run an audit to see the results here.</div>';
     return;
   }
 
-  const buckets = {};
-  state.findings.forEach((f) => {
+  const counts = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+  findings.forEach((f) => {
     const sev = (f.severity || "info").toLowerCase();
-    (buckets[sev] = buckets[sev] || []).push(f);
+    counts[counts[sev] === undefined ? "info" : sev] += 1;
   });
 
+  const total = findings.length;
+  const worst = worstSeverity(findings);
   const resilience = Math.round(state.resilience);
-  const counts = Object.entries(buckets)
-    .map(([sev, items]) => `${items.length} ${plainSeverity(sev).label.toLowerCase()}`)
-    .join(", ");
+  const riskClass = !worst
+    ? "ok"
+    : worst === "critical"
+      ? "bad"
+      : worst === "high" || worst === "medium"
+        ? "warn"
+        : "ok";
+  const riskLabel = !worst ? "No issues found" : `${severityMeta(worst).label} risk`;
 
-  const worst = ["critical", "high", "medium", "low", "info"].find((s) => buckets[s]);
-  const heroClass =
-    worst === "critical" ? "bad" : worst === "high" ? "warn" : worst === "medium" ? "warn" : "ok";
-  const heroTitle =
-    worst === "critical"
-      ? "There are problems that need attention today"
-      : worst === "high"
-        ? "There are real problems to fix soon"
-        : worst === "medium"
-          ? "A few things are worth fixing"
-          : "Nothing serious was found";
-
-  const groups = Object.keys(buckets)
-    .sort((a, b) => plainSeverity(a).order - plainSeverity(b).order)
+  const sevRows = Object.keys(SEVERITY_META)
+    .sort((a, b) => SEVERITY_META[a].order - SEVERITY_META[b].order)
     .map((sev) => {
-      const meta = plainSeverity(sev);
-      const cards = buckets[sev]
-        .map((f) => {
-          const plain = plainFinding(f);
-          const detail = [];
-          if (f.description) detail.push(`<dt>Details</dt><dd>${escapeHtml(f.description)}</dd>`);
-          if (f.recommendation)
-            detail.push(`<dt>What to do</dt><dd>${escapeHtml(f.recommendation)}</dd>`);
-          if (f.evidence)
-            detail.push(`<dt>Evidence</dt><dd><pre>${escapeHtml(f.evidence)}</pre></dd>`);
-          if (f.cvss_score)
-            detail.push(
-              `<dt>Technical score</dt><dd>CVSS ${f.cvss_score.toFixed(1)} ${escapeHtml(f.cvss_vector || "")}</dd>`
-            );
-          return `
-            <div class="issue">
-              <div class="issue-head">
-                <svg class="issue-icon" viewBox="0 0 20 20" style="color:${meta.color}">
-                  <circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.4"/>
-                  <path d="M10 6.2v5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
-                  <circle cx="10" cy="13.6" r="0.9" fill="currentColor"/>
-                </svg>
-                <div style="flex:1;min-width:0">
-                  <div class="issue-title">${escapeHtml(plain.what)}</div>
-                  ${plain.where ? `<div class="issue-where">${escapeHtml(plain.where)}</div>` : ""}
-                </div>
-              </div>
-              ${plain.means ? `<div class="issue-why">${escapeHtml(plain.means)}</div>` : ""}
-              ${detail.length ? `<div class="issue-detail"><dl>${detail.join("")}</dl></div>` : ""}
-            </div>`;
-        })
-        .join("");
+      const count = counts[sev] || 0;
+      const pct = total ? Math.round((count / total) * 100) : 0;
       return `
-        <div class="guided-group">
-          <div class="guided-group-title" style="color:${meta.color}">
-            <span class="sev-dot" style="background:${meta.dot}"></span>
-            ${meta.label} · ${buckets[sev].length}
-          </div>
-          ${meta.blurb ? `<div class="issue-why" style="margin:-2px 0 10px 16px;font-size:12px">${escapeHtml(meta.blurb)}</div>` : ""}
-          ${cards}
+        <div class="sev-row">
+          <span class="sev-name"><span class="sev-dot" style="background:${SEVERITY_META[sev].color}"></span>${SEVERITY_META[sev].label}</span>
+          <span class="sev-bar"><i style="width:${pct}%;background:${SEVERITY_META[sev].color}"></i></span>
+          <span class="sev-count">${count}</span>
         </div>`;
     })
     .join("");
+
+  const top = [...findings]
+    .sort(
+      (a, b) =>
+        severityMeta(a.severity).order - severityMeta(b.severity).order ||
+        (b.cvss_score || 0) - (a.cvss_score || 0)
+    )
+    .slice(0, 6)
+    .map((f) => {
+      const sev = (f.severity || "info").toLowerCase();
+      return `
+        <div class="dash-finding">
+          <span class="sev-dot" style="background:${severityMeta(sev).color}"></span>
+          <span class="df-title">${escapeHtml(f.title || "Untitled")}</span>
+          <span class="df-where">${escapeHtml(f.endpoint || f.target || "")}</span>
+          <span class="df-cvss">${(f.cvss_score || 0).toFixed(1)}</span>
+        </div>`;
+    })
+    .join("") || '<div class="panel-empty">No findings yet.</div>';
+
+  const rounds = state.rounds || [];
+  const timeline = rounds
+    .map(
+      (r) => `
+      <div class="dash-round">
+        <div class="dr-head">Round ${r.index}<span>${r.findings || 0} findings · ${r.mitigations || 0} mitigations</span></div>
+      </div>`
+    )
+    .join("") || '<div class="panel-empty">No rounds recorded.</div>';
 
   panel.innerHTML = `
-    <div class="guided-hero ${heroClass}">
-      <div class="gh-title">${heroTitle}</div>
-      <div class="guided-score">
-        <b style="color:${plainSeverity(worst).color}">${resilience}<span style="font-size:16px">%</span></b>
-        <span>of what was tested is already protected</span>
+    <div class="dash-hero ${riskClass}">
+      <div class="dh-risk">${escapeHtml(riskLabel)}</div>
+      <div class="dh-metrics">
+        <div class="dh-metric"><b>${total}</b><span>findings</span></div>
+        <div class="dh-metric"><b>${mitigations.length}</b><span>mitigations</span></div>
+        <div class="dh-metric"><b>${state.round || 0}<small>/${state.totalRounds || 0}</small></b><span>rounds</span></div>
+        <div class="dh-metric"><b>${resilience}<small>%</small></b><span>protected</span></div>
       </div>
-      <div class="gh-sub">${escapeHtml(counts || "no issues found")}.</div>
     </div>
-    ${groups}`;
-
-  panel.querySelectorAll(".issue").forEach((el) =>
-    el.addEventListener("click", () => el.classList.toggle("open"))
-  );
+    <div class="dash-section">
+      <div class="dash-title">Severity distribution</div>
+      ${sevRows}
+    </div>
+    <div class="dash-section">
+      <div class="dash-title">Top findings</div>
+      ${top}
+    </div>
+    <div class="dash-section">
+      <div class="dash-title">Rounds</div>
+      ${timeline}
+    </div>`;
 }
 
-function renderGuidedFixes() {
-  const panel = $("#panel-fixes");
-  if (!panel) return;
-  if (!state.mitigations.length) {
-    panel.innerHTML =
-      '<div class="panel-empty">Fixes appear here once the audit finds something.</div>';
-    return;
-  }
-  const findingTitle = (id) => {
-    const f = state.findingIndex && state.findingIndex[id];
-    return f ? plainFinding(f).what : "";
-  };
-  panel.innerHTML = state.mitigations
-    .map((m) => {
-      const forWhat = findingTitle(m.finding_id);
-      return `
-        <div class="fix">
-          <div class="fix-title">${escapeHtml(m.title || "Fix")}</div>
-          ${forWhat ? `<div class="fix-for">For: ${escapeHtml(forWhat)}</div>` : ""}
-          ${m.description ? `<div class="fix-why">${escapeHtml(m.description)}</div>` : ""}
-          ${m.content ? `<pre>${escapeHtml(m.content)}</pre>` : ""}
-        </div>`;
-    })
-    .join("");
-}
-
-function markExperience() {
-  const current = state.experience === "guided" ? "guided" : "developer";
-  $$("#experience-picker .exp-card").forEach((card) =>
-    card.classList.toggle("active", card.dataset.exp === current)
-  );
-}
-
-function applyExperience(developer) {
-  state.developerMode = developer;
-  document.body.dataset.experience = developer ? "developer" : "guided";
-
-  // The tab strip only shows the buttons that belong to this experience.
-  const tabs = $$("#review-tabs .rtab");
-  let firstVisible = null;
-  tabs.forEach((tab) => {
-    const wanted = tab.dataset.exp === (developer ? "developer" : "guided");
-    tab.classList.toggle("hidden", !wanted);
-    if (wanted && !firstVisible) firstVisible = tab;
-  });
-
-  const panels = $$(".rpanel");
-  panels.forEach((p) => p.classList.remove("active"));
-  // Developer panels already in the DOM; guided ones are rendered from state.
-  const defaultTab = developer ? "findings" : "results";
-  const button = tabs.find((t) => t.dataset.tab === defaultTab && !t.classList.contains("hidden"));
-  if (button) button.classList.add("active");
-  const panel = $("#panel-" + defaultTab);
+function focusTab(name) {
+  const tab = $(`#review-tabs .rtab[data-tab="${name}"]`);
+  if (!tab) return;
+  $$(".rtab").forEach((t) => t.classList.remove("active"));
+  $$(".rpanel").forEach((p) => p.classList.remove("active"));
+  tab.classList.add("active");
+  const panel = $("#panel-" + name);
   if (panel) panel.classList.add("active");
-
-  // Elements tagged with data-exp are handled by CSS via the body attribute,
-  // so only the untagged developer extras need toggling here.
-  ["#st-context", "#st-events"].forEach((sel) =>
-    $$(sel).forEach((el) => el.classList.toggle("hidden", !developer))
-  );
-  $$(".dev-only").forEach((el) => el.classList.toggle("hidden", !developer));
-  const modeSwitch = $("#mode-switch");
-  if (modeSwitch) {
-    // The copilot is useful to everyone, so it stays; only its label changes.
-    modeSwitch.classList.toggle("compact", !developer);
-  }
-
-  renderGuidedResults();
-  renderGuidedFixes();
-  markExperience();
 }
 
 /* ── panels ─────────────────────────────────────────────── */
@@ -1088,12 +1006,12 @@ function addFinding(data) {
   addInlineFinding(data);
   state.findingIndex = state.findingIndex || {};
   state.findingIndex[data.id] = data;
-  renderGuidedResults();
+  renderDashboard();
 }
 
 function addMitigation(data) {
   state.mitigations.push(data);
-  renderGuidedFixes();
+  renderDashboard();
   $("#count-mitigations").textContent = state.mitigations.length;
   const panel = $("#panel-mitigations");
   if ($(".panel-empty", panel)) $(".panel-empty", panel).remove();
@@ -1138,9 +1056,7 @@ function setResilience(value) {
   state.resilience = value;
   $("#st-resilience").textContent = Math.round(value);
   $("#res-bar").style.width = `${Math.max(0, Math.min(100, value))}%`;
-  // The guided summary shows the same number in plain language, so it has to
-  // follow the status bar instead of going stale.
-  if (!state.developerMode) renderGuidedResults();
+  renderDashboard();
 }
 
 /* ── event handling ─────────────────────────────────────── */
@@ -1271,6 +1187,12 @@ function handleEvent(event) {
       break;
     case "round.end":
       setResilience(Number(data.resilience || state.resilience));
+      state.rounds.push({
+        index: data.round,
+        findings: data.findings,
+        mitigations: data.mitigations,
+      });
+      renderDashboard();
       addActivity(`round ${data.round} end · ${data.findings} findings · ${data.mitigations} mitigations`);
       break;
     case "log":
@@ -1300,17 +1222,28 @@ function handleEvent(event) {
         addActivity(`audit complete · session ${data.session}`);
         toast("Audit complete");
         renderReport();
+        focusTab("dashboard");
+        renderDashboard();
       } else if (data.error !== "cancelled") {
         toast(data.error || "audit failed", true);
       }
       break;
     case "chat.start":
       setChatting(true);
+      // Begin a fresh assistant bubble for this turn; it streams into the same
+      // continuous conversation instead of spawning a separate chat.
+      ensureMsg("assistant");
       break;
     case "chat.end":
       setChatting(false);
       finalize("assistant");
       finalizeThinking("assistant");
+      state.chatTurns = (state.chatTurns || 0) + 1;
+      if (data && data.ok && data.text && !state.rawText.assistant) {
+        // Fallback: render the final text directly if streamed text was lost.
+        appendText("assistant", data.text);
+        finalize("assistant");
+      }
       if (data && data.error && data.error !== "cancelled") toast(data.error, true);
       break;
     case "chat.reset":
@@ -1348,14 +1281,11 @@ function resetStream() {
     if (info && info.ok) renderWorkspace(info);
   });
   state.findingIndex = {};
+  state.rounds = [];
+  $("#panel-dashboard").innerHTML =
+    '<div class="panel-empty">Run an audit to see the results here.</div>';
   $("#panel-findings").innerHTML = '<div class="panel-empty">No findings yet.</div>';
   $("#panel-mitigations").innerHTML = '<div class="panel-empty">No mitigations yet.</div>';
-  if (!state.developerMode) {
-    $("#panel-results").innerHTML =
-      '<div class="panel-empty">Run an audit to see the results here.</div>';
-    $("#panel-fixes").innerHTML =
-      '<div class="panel-empty">Fixes appear here once the audit finds something.</div>';
-  }
   $("#panel-activity").innerHTML = "";
   $("#panel-report").innerHTML = '<div class="panel-empty">The report is generated at the end of a run.</div>';
   $("#count-findings").textContent = "0";
@@ -1377,6 +1307,7 @@ function resetChat() {
   delete state.currentMsg.assistant;
   delete state.rawText.assistant;
   state.tools = {};
+  state.chatTurns = 0;
 }
 
 function renderReport() {
@@ -1401,11 +1332,6 @@ function renderBootstrap(data) {
   $("#settings-path").textContent = data.config_path || "";
   $("#project-path").textContent = data.project_path || "";
 
-  // Which interface to show. The backend already applied the auto heuristic.
-  const ui = data.ui || {};
-  applyExperience(ui.developer_mode !== false);
-  state.experience = ui.experience || "auto";
-
   updateModelUI();
   renderTarget();
   renderSessions(data.sessions || []);
@@ -1413,28 +1339,19 @@ function renderBootstrap(data) {
   fillProjectForm();
   setRunning(!!data.running);
   setChatting(!!data.chatting);
+  renderDashboard();
 
-  // The toolbox dialog and provider setup are developer concerns. In the
-  // simple experience the defaults are chosen silently so the operator can
-  // just press Run.
-  if (state.developerMode) {
-    refreshToolbox().then((status) => {
-      const exec = data.execution || {};
-      if (status && status.docker_cli && !exec.installed && !status.image) {
-        openToolboxDialog();
-      }
-    });
-  }
+  refreshToolbox().then((status) => {
+    const exec = data.execution || {};
+    if (status && status.docker_cli && !exec.installed && !status.image) {
+      openToolboxDialog();
+    }
+  });
 
   if (!data.configured) {
-    toast(
-      state.developerMode
-        ? "Connect a provider to start"
-        : "One-time setup: choose the AI model to use",
-      true,
-    );
+    toast("Connect a provider to start", true);
     openSettings();
-    if (state.developerMode) openConnectProvider("");
+    openConnectProvider("");
   }
 }
 
@@ -1495,6 +1412,11 @@ async function loadSession(id) {
   const s = res.state || {};
   setMode("audit");
   resetStream();
+  state.rounds = (s.rounds || []).map((r) => ({
+    index: r.index,
+    findings: (r.finding_ids || []).length,
+    mitigations: (r.mitigation_ids || []).length,
+  }));
   addDivider("core", `Loaded session ${s.id}`);
   (s.rounds || []).forEach((r) => {
     addDivider("red", `Round ${r.index} · offence`);
@@ -2229,25 +2151,54 @@ async function sendChat() {
   if (!message || state.chatting) return;
   const empty = $("#chat-empty");
   if (empty) empty.remove();
-  appendText("assistant", ""); // placeholder message for the user
+  // Finish any assistant bubble left open, then append the user's message to the
+  // same conversation. The assistant reply streams below it as the next turn.
   finalize("assistant");
-  // render the user's own message
+  appendUserMessage(message);
+  input.value = "";
+  input.style.height = "auto";
+  const res = await api("chat_send", message);
+  if (!res || !res.ok) {
+    toast(res && res.error ? res.error : "could not send", true);
+    input.value = message; // give the text back so nothing is lost
+    return;
+  }
+  // Optimistically enter the working state; chat.start confirms it. This
+  // removes the window where the user could fire a second message.
+  setChatting(true);
+  await pollChat();
+}
+
+function appendUserMessage(message) {
+  const stream = $("#chat-stream");
   const wrap = document.createElement("div");
-  wrap.className = "msg";
+  wrap.className = "msg user";
   wrap.innerHTML = `
     <div class="msg-head">
-      <div class="avatar core">Y</div>
       <span class="msg-name core">You</span>
       <span class="msg-time">${nowTime()}</span>
     </div>
     <div class="msg-body">${md(message)}</div>`;
-  $("#chat-stream").appendChild(wrap);
-  $("#chat-stream").scrollTop = $("#chat-stream").scrollHeight;
-  input.value = "";
-  input.style.height = "auto";
-  const res = await api("chat_send", message);
-  if (!res || !res.ok) toast(res && res.error ? res.error : "could not send", true);
-  else setChatting(true);
+  stream.appendChild(wrap);
+  stream.scrollTop = stream.scrollHeight;
+}
+
+/* The chat runs on a background thread and pushes events through the bridge.
+   Between pushes we poll so the UI stays live even if an event is dropped. */
+async function pollChat() {
+  for (let i = 0; i < 2400; i += 1) {
+    await new Promise((r) => setTimeout(r, 120));
+    if (!state.chatting) break;
+    const res = await api("chat_state");
+    if (res && res.ok && res.pending && res.events && res.events.length) {
+      window.SplitAgent.emit(res.events);
+    }
+    if (res && res.ok && !res.running && !res.pending) {
+      setChatting(false);
+      finalize("assistant");
+      break;
+    }
+  }
 }
 
 async function clearChat() {
@@ -2355,24 +2306,8 @@ function wire() {
   $("#btn-guided").addEventListener("click", openWizard);
   $("#btn-wizard").addEventListener("click", openWizard);
   $("#empty-start").addEventListener("click", openWizard);
-  const emptyGuided = $("#empty-start-guided");
-  if (emptyGuided) emptyGuided.addEventListener("click", openWizard);
   $("#btn-export").addEventListener("click", exportReport);
   $("#btn-dump-trace").addEventListener("click", dumpTrace);
-  $$("#experience-picker .exp-card").forEach((card) =>
-    card.addEventListener("click", async () => {
-      const wanted = card.dataset.exp;
-      const res = await api("set_experience", wanted);
-      if (!res || !res.ok) {
-        toast((res && res.error) || "could not switch", true);
-        return;
-      }
-      state.experience = res.experience;
-      applyExperience(res.developer_mode);
-      markExperience();
-      toast(wanted === "guided" ? "Simple interface on" : "Developer interface on");
-    })
-  );
 
   $("#btn-workspace").addEventListener("click", openWorkspace);
   $("#btn-toolbox").addEventListener("click", openToolboxDialog);
@@ -2572,6 +2507,47 @@ function wire() {
   });
   $("#btn-command").addEventListener("click", () => openPalette("Command", COMMANDS, (i) => i.run()));
 
+  // panel collapse + drag resize
+  const body = $("#body");
+  const sideW = () =>
+    parseFloat(getComputedStyle(body).getPropertyValue("--side-w")) || 272;
+  const reviewW = () =>
+    parseFloat(getComputedStyle(body).getPropertyValue("--review-w")) || 384;
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+  const toggleSidebar = () =>
+    document.body.classList.toggle("sidebar-collapsed");
+  const toggleReview = () => document.body.classList.toggle("review-collapsed");
+  $("#btn-toggle-sidebar").addEventListener("click", toggleSidebar);
+  $("#btn-toggle-review").addEventListener("click", toggleReview);
+
+  function installResizer(el, varName, getter, min, max, invert) {
+    if (!el) return;
+    let startX = 0;
+    let startW = 0;
+    const move = (e) => {
+      const delta = (e.clientX - startX) * (invert ? -1 : 1);
+      body.style.setProperty(varName, clamp(startW + delta, min, max) + "px");
+    };
+    const up = () => {
+      el.classList.remove("dragging");
+      body.classList.remove("resizing");
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+    };
+    el.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      startX = e.clientX;
+      startW = getter();
+      el.classList.add("dragging");
+      body.classList.add("resizing");
+      window.addEventListener("mousemove", move);
+      window.addEventListener("mouseup", up);
+    });
+  }
+  installResizer($("#resize-sidebar"), "--side-w", sideW, 180, 420, false);
+  installResizer($("#resize-review"), "--review-w", reviewW, 260, 640, true);
+
   // window controls
   $("#win-min").addEventListener("click", () => api("window_action", "minimize"));
   $("#win-max").addEventListener("click", () => api("window_action", "maximize"));
@@ -2614,6 +2590,14 @@ function wire() {
       e.preventDefault();
       openSettings();
     }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b") {
+      e.preventDefault();
+      document.body.classList.toggle("sidebar-collapsed");
+    }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "j") {
+      e.preventDefault();
+      document.body.classList.toggle("review-collapsed");
+    }
     if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
       e.preventDefault();
       if (state.mode === "chat") sendChat();
@@ -2653,6 +2637,74 @@ function highlightMp() {
   $$("#mp-list .mp-item").forEach((el, i) => el.classList.toggle("active", i === (state.mpIndex || 0)));
 }
 
+/* ── Boot intro ─────────────────────────────────────────── */
+function playIntro() {
+  const intro = $("#intro");
+  if (!intro) return;
+  // Respect reduced motion: skip straight to the app.
+  if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    intro.remove();
+    return;
+  }
+
+  const lines = $("#intro-lines");
+  const script = [
+    "initialising purple-team core",
+    "loading recon \u00b7 web \u00b7 exploit toolkits",
+    "encrypted shared context ready",
+    "red team \u00b7 blue team online",
+  ];
+  const canvas = $("#intro-canvas");
+  const ctx = canvas.getContext("2d");
+  const dpr = window.devicePixelRatio || 1;
+  const resize = () => {
+    canvas.width = intro.clientWidth * dpr;
+    canvas.height = intro.clientHeight * dpr;
+  };
+  resize();
+
+  let raf = 0;
+  const stars = Array.from({ length: 90 }, () => ({
+    x: Math.random(),
+    y: Math.random(),
+    z: Math.random() * 0.8 + 0.2,
+    r: Math.random() * 1.6 + 0.4,
+    hue: Math.random() < 0.5 ? "91,118,255" : "90,210,230",
+  }));
+  const draw = () => {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    stars.forEach((s) => {
+      s.y += 0.0004 * s.z;
+      if (s.y > 1) s.y = 0;
+      const x = s.x * canvas.width + Math.sin((Date.now() / 1400 + s.x * 20)) * 6 * dpr;
+      const y = s.y * canvas.height;
+      const r = s.r * s.z * dpr;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(${s.hue},${0.25 + s.z * 0.55})`;
+      ctx.fill();
+    });
+    raf = requestAnimationFrame(draw);
+  };
+  draw();
+
+  script.forEach((text, i) => {
+    const line = document.createElement("div");
+    line.innerHTML = `<b>\u2713</b> ${escapeHtml(text)}`;
+    line.style.animationDelay = `${0.9 + i * 0.4}s`;
+    lines.appendChild(line);
+  });
+
+  const finish = () => {
+    cancelAnimationFrame(raf);
+    intro.classList.add("done");
+    document.body.classList.add("ready");
+    setTimeout(() => intro.remove(), 700);
+  };
+  setTimeout(finish, 0.9 + script.length * 0.4 + 0.7);
+  intro.addEventListener("click", finish);
+}
+
 let booted = false;
 let wired = false;
 async function boot() {
@@ -2669,6 +2721,7 @@ async function boot() {
   if (data && data.version) {
     booted = true;
     renderBootstrap(data);
+    playIntro();
   } else {
     setTimeout(boot, 300);
   }

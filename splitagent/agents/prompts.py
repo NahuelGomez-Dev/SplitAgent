@@ -106,6 +106,11 @@ firing tools.
   including concrete evidence (the exact request/payload and the observed
   response) and a CVSS v3.1 vector when you can justify one. Put the validation
   result in the evidence field.
+- Fill the report fields on every finding so the report is complete and
+  consistent: `cwe` (e.g. `CWE-89: SQL Injection`), `owasp` (e.g.
+  `A03:2021 - Injection`), `impact` (what an attacker gains, in one or two
+  plain sentences) and `reproduction` (numbered steps or the exact command to
+  reproduce it). Use your best judgement when unsure; do not leave them empty.
 - Do not report speculation as fact. Use confidence high/medium/low honestly.
 - Store raw output in the workspace (`recon/`) and durable notes in
   `notes/` so the next round - or a future run - can build on it.

@@ -82,6 +82,8 @@ class DesktopApp:
         self._chat_thread: threading.Thread | None = None
         self._chat_loop: asyncio.AbstractEventLoop | None = None
         self._chat_task: asyncio.Task[Any] | None = None
+        self._chat_events: list[dict[str, Any]] = []
+        self._chat_done = False
         self._toolbox_thread: threading.Thread | None = None
 
     # -- lifecycle --------------------------------------------------------- #
@@ -95,7 +97,7 @@ class DesktopApp:
             js_api=self.api,
             width=1460,
             height=940,
-            min_size=(1100, 700),
+            min_size=(760, 540),
             frameless=True,
             easy_drag=False,
             background_color="#161616",
@@ -126,6 +128,8 @@ class DesktopApp:
 
     # -- JS bridge helpers ------------------------------------------------- #
     def _emit(self, batch: list[dict[str, Any]]) -> None:
+        if batch:
+            self._chat_events.extend(batch)
         if not batch or self.window is None:
             return
         payload = json.dumps(batch, ensure_ascii=False, default=str)
@@ -234,8 +238,7 @@ class DesktopApp:
         except Exception as exc:
             self._push({"type": "error", "agent": "core", "data": {"text": f"report: {exc}"}})
         self.report_paths = report_paths
-        # A finished audit is the signal that the operator has found their feet,
-        # which is what promotes ``experience: auto`` to the full interface.
+        # Counting completed audits feeds the dashboard header.
         self.global_config.ui.audits_completed += 1
         save_global_config(self.global_config)
         self._emit(
@@ -344,9 +347,26 @@ class DesktopApp:
             return {"ok": False, "error": "empty message"}
         if self.is_chatting():
             return {"ok": False, "error": "The copilot is still answering."}
+        self._chat_events = []
+        self._chat_done = False
         self._chat_thread = threading.Thread(target=self._chat_entry, args=(text,), daemon=True)
         self._chat_thread.start()
         return {"ok": True}
+
+    def chat_state(self, since: int = 0) -> dict[str, Any]:
+        """Events since an index, for the UI to poll without gaps.
+
+        Pushes over the bridge are best-effort; this lets the front-end replay
+        whatever it missed, so a reply can never be lost mid-stream.
+        """
+        events = list(self._chat_events)
+        return {
+            "ok": True,
+            "running": self.is_chatting(),
+            "pending": not self._chat_done,
+            "events": events[since:],
+            "next": len(events),
+        }
 
     def _chat_entry(self, message: str) -> None:
         try:
@@ -403,6 +423,7 @@ class DesktopApp:
             self._chat_history = list(agent.history)
         self._flush(force=True)
         self._emit([{"type": "chat.end", "data": {"ok": True, "text": result.text}}])
+        self._chat_done = True
 
     # -- toolbox ----------------------------------------------------------- #
     def _toolbox(self) -> Toolbox:

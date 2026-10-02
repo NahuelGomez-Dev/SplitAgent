@@ -9,6 +9,7 @@ shapes only, so the documented placeholders (``sk-...``, ``oc_sk_...``) and the
 from __future__ import annotations
 
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -31,10 +32,20 @@ PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 ALLOW_SUFFIXES = {".md", ".example", ".dist", ".lock"}
 
 
+def _tracked_files() -> list[Path]:
+    """Every file git tracks, for the CI scan (pre-commit passes files instead)."""
+    try:
+        result = subprocess.run(["git", "ls-files"], capture_output=True, text=True, check=True)
+    except (OSError, subprocess.CalledProcessError):
+        return []
+    return [Path(line) for line in result.stdout.splitlines() if line.strip()]
+
+
 def main(argv: list[str]) -> int:
+    args = argv[1:]
+    paths = _tracked_files() if not args or args == ["--all"] else [Path(a) for a in args]
     findings: list[str] = []
-    for raw in argv[1:]:
-        path = Path(raw)
+    for path in paths:
         if not path.is_file() or path.suffix in ALLOW_SUFFIXES:
             continue
         if path.name in {"check_secrets.py", "conftest.py"}:

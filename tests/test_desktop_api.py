@@ -184,43 +184,19 @@ def test_connect_provider_requires_a_provider(api):
 
 
 # --------------------------------------------------------------------------- #
-# interface experience
+# interface preferences
 # --------------------------------------------------------------------------- #
-def test_bootstrap_exposes_the_experience(app, api):
+def test_bootstrap_ui_has_no_experience_model(api):
     data = api.bootstrap()
     assert "ui" in data
-    # A first run defaults to the simple interface.
-    assert data["ui"]["developer_mode"] is False
-    assert data["ui"]["experience"] == "auto"
+    assert "audits_completed" in data["ui"]
+    # The single-interface model removed these keys entirely.
+    assert "experience" not in data["ui"]
+    assert "developer_mode" not in data["ui"]
 
 
-def test_set_experience_developer(app, api):
-    result = api.set_experience("developer")
-    assert result["ok"] is True
-    assert result["developer_mode"] is True
-    assert app.global_config.ui.experience_chosen is True
-    # Persisted, so the next launch keeps it.
-    assert load_global_config().ui.experience == "developer"
-
-
-def test_set_experience_guided(app, api):
-    result = api.set_experience("guided")
-    assert result["ok"] is True
-    assert result["developer_mode"] is False
-    assert load_global_config().ui.developer_mode is False
-
-
-def test_set_experience_auto_clears_the_explicit_choice(app, api):
-    api.set_experience("developer")
-    result = api.set_experience("auto")
-    assert result["ok"] is True
-    assert app.global_config.ui.experience_chosen is False
-
-
-def test_set_experience_rejects_an_unknown_value(api):
-    result = api.set_experience("fancy")
-    assert result["ok"] is False
-    assert "unknown" in result["error"]
+def test_set_experience_was_removed(api):
+    assert not hasattr(api, "set_experience")
 
 
 def test_set_ui_preference_toggles_thinking(app, api):
@@ -229,14 +205,6 @@ def test_set_ui_preference_toggles_thinking(app, api):
     assert load_global_config().ui.show_thinking is False
     api.set_ui_preference({"show_thinking": True})
     assert load_global_config().ui.show_thinking is True
-
-
-def test_experience_promotes_after_a_completed_audit(app):
-    from splitagent.config import save_global_config
-
-    app.global_config.ui.audits_completed = 1
-    save_global_config(app.global_config)
-    assert app.api.bootstrap()["ui"]["developer_mode"] is True
 
 
 # --------------------------------------------------------------------------- #
@@ -430,6 +398,38 @@ def test_chat_send_rejects_an_empty_message(api):
     result = api.chat_send("   ")
     assert result["ok"] is False
     assert "empty" in result["error"]
+
+
+def test_chat_state_starts_empty_and_jsonable(app, api):
+    app._chat_events = []
+    app._chat_done = False
+    state = api.chat_state(0)
+    assert _jsonable(state)
+    assert state["ok"] is True
+    assert state["events"] == []
+    assert state["next"] == 0
+    assert state["pending"] is True
+
+
+def test_chat_state_replays_events_since_an_index(app, api):
+    app._chat_events = [
+        {"type": "chat.start", "data": {}},
+        {"type": "agent.text", "agent": "assistant", "data": {"text": "hi"}},
+    ]
+    app._chat_done = True
+    everything = api.chat_state(0)
+    assert [e["type"] for e in everything["events"]] == ["chat.start", "agent.text"]
+    assert everything["next"] == 2
+    tail = api.chat_state(1)
+    assert [e["type"] for e in tail["events"]] == ["agent.text"]
+
+
+def test_emit_buffers_events_for_polling(app):
+    # With no window attached, pushed events must still be recoverable.
+    app.window = None
+    app._chat_events = []
+    app._emit([{"type": "x", "data": {}}])
+    assert app._chat_events == [{"type": "x", "data": {}}]
 
 
 # --------------------------------------------------------------------------- #

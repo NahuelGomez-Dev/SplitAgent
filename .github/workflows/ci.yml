@@ -26,9 +26,11 @@ jobs:
           cache: pip
       - run: pip install ruff
       - name: ruff check
-        run: ruff check splitagent tests
+        run: ruff check splitagent tests scripts
       - name: ruff format --check
-        run: ruff format splitagent tests --check
+        run: ruff format splitagent tests scripts --check
+      - name: Secret scan
+        run: python scripts/check_secrets.py --all
 
   test:
     name: Test (Python ${{ matrix.python-version }} on ${{ matrix.os }})

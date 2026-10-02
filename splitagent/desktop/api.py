@@ -61,9 +61,6 @@ class JsApi:
             "sessions": self._app.list_sessions(),
             "execution": dataclasses.asdict(project.run.execution),
             "ui": {
-                "experience": config.ui.experience,
-                "developer_mode": config.ui.developer_mode,
-                "experience_chosen": config.ui.experience_chosen,
                 "audits_completed": config.ui.audits_completed,
                 "show_thinking": config.ui.show_thinking,
             },
@@ -108,27 +105,6 @@ class JsApi:
 
     # -- providers & model visibility -------------------------------------- #
     # -- interface preferences --------------------------------------------- #
-    def set_experience(self, value: str) -> dict[str, Any]:
-        """Switch between the guided and developer interfaces.
-
-        ``guided`` is for someone who is not a security engineer: plain
-        language, one obvious action at a time. ``developer`` is the full
-        cockpit. Choosing either marks the preference as explicit so the
-        automatic first-run heuristic stops overriding it.
-        """
-        value = str(value or "").strip().lower()
-        if value not in ("auto", "guided", "developer"):
-            return {"ok": False, "error": f"unknown experience '{value}'"}
-        config = self._app.global_config
-        config.ui.experience = value
-        config.ui.experience_chosen = value != "auto"
-        save_global_config(config)
-        return {
-            "ok": True,
-            "experience": config.ui.experience,
-            "developer_mode": config.ui.developer_mode,
-        }
-
     def set_ui_preference(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Persist a single UI preference (currently ``show_thinking``)."""
         config = self._app.global_config
@@ -369,6 +345,9 @@ class JsApi:
 
     def chat_stop(self) -> dict[str, Any]:
         return self._app.chat_stop()
+
+    def chat_state(self, since: int = 0) -> dict[str, Any]:
+        return self._app.chat_state(since)
 
     def list_models(self) -> dict[str, Any]:
         return self._app.list_models()

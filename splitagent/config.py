@@ -293,24 +293,9 @@ class UISettings:
     theme: str = "opencode"
     show_thinking: bool = True
     refresh_per_second: int = 12
-    # ``guided`` hides the technical surface (trace, raw tool output, provider
-    # plumbing) and explains everything in plain language. ``developer`` shows
-    # the full cockpit: every panel, raw events and the model internals.
-    # ``auto`` picks guided for a first run and developer once the operator has
-    # used the tool, which is what most people want without configuring it.
-    experience: str = "auto"  # auto | guided | developer
-    # Once the operator explicitly chooses, we stop guessing.
-    experience_chosen: bool = False
+    # Counter shown on the dashboard. It no longer drives an interface
+    # heuristic: there is a single interface.
     audits_completed: int = 0
-
-    @property
-    def developer_mode(self) -> bool:
-        if self.experience == "developer":
-            return True
-        if self.experience == "guided":
-            return False
-        # auto: technical by default, guided until the first audit is done.
-        return bool(self.experience_chosen) or self.audits_completed > 0
 
 
 @dataclass

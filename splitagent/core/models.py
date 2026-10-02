@@ -52,6 +52,12 @@ class Finding:
     endpoint: str = ""
     evidence: str = ""
     recommendation: str = ""
+    # Report fields: keep the AI's contribution to a fixed, structured shape so
+    # the generated document is consistent from run to run.
+    cwe: str = ""
+    owasp: str = ""
+    impact: str = ""
+    reproduction: str = ""
     references: list[str] = field(default_factory=list)
     confidence: str = "medium"
     discovered_by: str = "red"

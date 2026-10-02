@@ -1,5 +1,10 @@
 # SplitAgent
 
+[![CI](https://github.com/NahuelGomez-Dev/SplitAgent/actions/workflows/ci.yml/badge.svg)](https://github.com/NahuelGomez-Dev/SplitAgent/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/splitagent.svg)](https://pypi.org/project/splitagent/)
+[![Python](https://img.shields.io/pypi/pyversions/splitagent.svg)](https://pypi.org/project/splitagent/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/NahuelGomez-Dev/SplitAgent/blob/main/LICENSE)
+
 **Autonomous dual-team (Purple Team) security framework.**
 
 SplitAgent automates penetration testing and defensive hardening with two
@@ -76,18 +81,17 @@ Textual TUI.
 Requires **Python 3.10+**. Docker is optional (only for the sandbox).
 
 ```bash
-git clone https://github.com/splitagent/splitagent
-cd splitagent
-python -m venv .venv
-. .venv/bin/activate        # Windows: .\.venv\Scripts\Activate.ps1
-pip install -e .
+pip install splitagent
 ```
 
-Or simply:
+From source:
 
 ```bash
-pip install -r requirements.txt
-pip install -e .
+git clone https://github.com/NahuelGomez-Dev/SplitAgent
+cd SplitAgent
+python -m venv .venv
+. .venv/bin/activate        # Windows: .\.venv\Scripts\Activate.ps1
+pip install -e ".[dev]"
 ```
 
 ---
@@ -166,35 +170,24 @@ Two work modes, switched from the titlebar:
 - **Copilot** — a conversational assistant that helps you *do* the pentest:
   plan the engagement, explain a vulnerability, inspect the target with the
   full toolset, draft payloads, firewall rules or patches, and interpret
-  findings. It keeps the conversation history and streams its reasoning.
+  findings. It is a **single continuous conversation** — ask a follow-up and it
+  keeps the whole thread and its context.
 
-### Two interfaces for two audiences
+### One cockpit
 
-The same engine, presented two ways. Switch any time in **Settings → General**,
-and the choice is remembered.
+There is a single interface. The panels adapt to the work:
 
-| | **Simple** | **Developer** |
-| --- | --- | --- |
-| Who it is for | someone who is not a security engineer | a pentester or developer |
-| Result panel | **Results** — one plain-language summary | **Findings** — full technical list |
-| Wording | "This page runs code that comes from the visitor" | the raw finding title and payload |
-| Severity | Fix today / Fix this week / Plan a fix / Nice to have | CRITICAL / HIGH / MEDIUM / LOW and CVSS |
-| Extras | a plain **% of what was tested is protected** | context meter, event count |
-| Panels | Results, What to fix, Report | + Mitigations, Trace, Activity |
-| Controls | one button: **Check my site** | run, rounds, sandbox, provider and tuning |
-
-The simple interface still shows the evidence, the CVSS vector and the patch,
-just folded behind a click, so nothing is hidden from a curious user.
-
-On a **first run** the app picks Simple automatically. Once an audit has been
-completed — or the moment you choose explicitly — it promotes itself to
-Developer, which is what a returning user wants without having to configure it.
-
-```yaml
-# ~/.splitagent/config.yaml
-ui:
-  experience: auto   # auto | guided | developer
-```
+- **Resizable columns** — drag the dividers between the sidebar, the stream and
+  the review panel; hide either side with the titlebar buttons or `Ctrl+B`
+  (sidebar) / `Ctrl+J` (panel). The centre expands to fill the space.
+- **Dashboard** — after a run, the review panel opens on a summary: overall
+  risk, severity distribution, top findings, round timeline and the resilience
+  score, all from live session state.
+- **One activity line** — a single `Thinking` / `Exploring` line stays pinned at
+  the bottom of the stream and flips verb as the agent works, instead of
+  stacking. The full reasoning is one click away.
+- **Response timer** — a small live counter next to the agent's name while it
+  answers.
 
 The **guided setup** asks a few questions before running (target kind →
 address and scope → sandbox or existing target → optional credentials →
@@ -263,8 +256,8 @@ an interface modelled on OpenCode's Desktop v2 design language:
 - **Live stream** — Red and Blue messages stream in with tool calls that
   expand to show the exact arguments and output, plus inline severity cards and
   context-checkpoint cards.
-- **Review panel** — Findings, Mitigations, the generated Report and an
-  Activity log, all updating in real time.
+- **Review panel** — Dashboard, Findings, Mitigations, the generated Report,
+  the full Trace and an Activity log, all updating in real time.
 - **Composer** — set the objective, pick the model, toggle the Docker sandbox
   and rounds, then **Run audit** (`Ctrl+Enter`). The **Guided** button opens
   the wizard.
@@ -866,11 +859,37 @@ response. No tool deletes data, writes files on the target or opens a shell.
 Each session produces:
 
 - **Markdown** — portable, versionable.
-- **HTML** — a standalone dark-themed document (OpenCode palette).
+- **HTML** — a standalone, **printable A4** document with a cover, document
+  control and the full penetration-test structure.
 - **JSON** — machine-readable, including metrics and the full session state.
 
-Findings carry a CVSS v3.1 vector and score, evidence, confidence, the round
-they were discovered in, and the mitigations that address them.
+The report layout is **owned by code, not by the model**, so two sessions with
+the same data produce the same document, byte for byte. The AI only fills
+structured fields; it never composes the document. Every report follows the same
+section order:
+
+| # | Section |
+| --- | --- |
+| — | Document control (version, classification, scope, model, dates) |
+| 1 | Executive summary (overall risk, severity counts, top findings, resilience) |
+| 2 | Scope and rules of engagement |
+| 3 | Methodology and standards (OWASP WSTG/ASVS, PTES, NIST SP 800-115, ATT&CK) |
+| 4 | Severity model (CVSS v3.1 bands) |
+| 5 | Findings summary table |
+| 6 | Detailed findings (one repeatable block per finding) |
+| 7 | Remediation roadmap (priority + target SLA) |
+| 8 | Retest and status tracking |
+| 9 | Appendices (model usage, notes, round timeline) |
+| 10 | Limitations and disclaimer |
+
+Each finding block carries CVSS v3.1 score **and vector**, **CWE**, **OWASP**
+category, affected asset, description, business **impact**, evidence, steps to
+**reproduce**, remediation and status. Fields the model did not provide render as
+*"Not provided"* rather than being guessed or left blank.
+
+The **Dashboard** tab is the at-a-glance counterpart inside the app: overall
+risk, severity distribution, top findings, round timeline and resilience,
+rendered live from the session.
 
 ### The resilience score tells the truth
 

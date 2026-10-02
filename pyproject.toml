@@ -1,14 +1,15 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "splitagent"
-version = "0.0.1"
+version = "0.0.2"
 description = "Autonomous dual-team (Purple Team) security framework powered by configurable LLM APIs."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "SplitAgent Contributors" }]
 keywords = ["security", "pentest", "agents", "purple-team", "llm", "automation"]
 classifiers = [
@@ -16,7 +17,6 @@ classifiers = [
     "Environment :: Console",
     "Intended Audience :: Developers",
     "Intended Audience :: Information Technology",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Topic :: Security",
 ]
@@ -43,7 +43,10 @@ http2 = ["h2>=4.1"]
 splitagent = "splitagent.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/splitagent/splitagent"
+Homepage = "https://github.com/NahuelGomez-Dev/SplitAgent"
+Repository = "https://github.com/NahuelGomez-Dev/SplitAgent"
+Issues = "https://github.com/NahuelGomez-Dev/SplitAgent/issues"
+Changelog = "https://github.com/NahuelGomez-Dev/SplitAgent/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 include = ["splitagent*"]

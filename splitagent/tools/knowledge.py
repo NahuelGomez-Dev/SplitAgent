@@ -19,6 +19,10 @@ async def _record_finding(
     endpoint: str = "",
     evidence: str = "",
     recommendation: str = "",
+    cwe: str = "",
+    owasp: str = "",
+    impact: str = "",
+    reproduction: str = "",
     confidence: str = "medium",
     references: list[str] | None = None,
 ) -> dict[str, Any]:
@@ -36,6 +40,10 @@ async def _record_finding(
         "endpoint": endpoint,
         "evidence": evidence,
         "recommendation": recommendation,
+        "cwe": cwe,
+        "owasp": owasp,
+        "impact": impact,
+        "reproduction": reproduction,
         "confidence": confidence,
         "references": references or [],
         "round": ctx.round,
@@ -205,6 +213,22 @@ def knowledge_tools(ctx: ToolContext) -> list[Tool]:
                     "endpoint": {"type": "string"},
                     "evidence": {"type": "string"},
                     "recommendation": {"type": "string"},
+                    "cwe": {
+                        "type": "string",
+                        "description": "CWE id and name, e.g. 'CWE-89: SQL Injection'.",
+                    },
+                    "owasp": {
+                        "type": "string",
+                        "description": "OWASP category, e.g. 'A03:2021 - Injection'.",
+                    },
+                    "impact": {
+                        "type": "string",
+                        "description": "Business impact in plain language: what an attacker gains.",
+                    },
+                    "reproduction": {
+                        "type": "string",
+                        "description": "Numbered steps or exact commands to reproduce the finding.",
+                    },
                     "confidence": {
                         "type": "string",
                         "enum": ["high", "medium", "low"],

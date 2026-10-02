@@ -3,6 +3,82 @@
 All notable changes to SplitAgent are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.0.2] - 2026-10-02
+
+Redesign of the reporting engine and the desktop experience. Reports now follow
+a fixed, professional penetration-test structure, the desktop gained a
+post-audit dashboard and resizable panels, and the whole interface was unified
+into a single cockpit.
+
+### Added
+
+**Professional report engine**
+
+- Deterministic, code-owned report template: two sessions with the same data
+  produce the same document, byte for byte. The model only fills structured
+  fields — it never composes the document.
+- Full penetration-test structure in Markdown and printable A4 HTML: document
+  control, executive summary, scope and rules of engagement, methodology and
+  standards, severity model, findings summary, detailed findings, remediation
+  roadmap, retest tracking, appendices and limitations.
+- Structured finding fields: `cwe`, `owasp`, `impact` and `reproduction`, added
+  to `record_finding`, the Red Agent's prompt and `Finding`. Missing fields
+  render as "Not provided" instead of raising.
+- Severity model, remediation priorities with target SLAs (P0 24-48h → P4 best
+  effort) and a retest/status table.
+
+**Desktop**
+
+- Post-audit **Dashboard** tab: overall risk, severity distribution, top
+  findings, round timeline and resilience — rendered from live session state
+  with inline CSS/SVG, no chart dependency. It focuses automatically when a run
+  ends.
+- **Resizable and collapsible panels**: drag the dividers to resize the sidebar
+  and the review panel, or hide them with the titlebar buttons / `Ctrl+B`
+  (sidebar) and `Ctrl+J` (review).
+- **Continuous Copilot conversation**: replies stream into a single ongoing
+  thread instead of spawning a new chat each message. Chat events are buffered
+  and polled, so a reply can never be lost mid-stream.
+- **Boot intro animation** (canvas particles, drawn mark, boot log) with a
+  click-to-skip and `prefers-reduced-motion` support.
+- A single **Thinking / Exploring** activity line pinned to the bottom of the
+  stream, flipping verb based on what the agent is doing instead of stacking.
+- A Grok-style **response timer** under the active message header.
+
+### Changed
+
+- **One interface.** The Simple/Developer experience model (`experience`,
+  `experience_chosen`, `developer_mode`) was removed in favour of a single
+  cockpit. Legacy configs containing those keys still load.
+- Agent and user **avatars removed** from message headers; name and time remain.
+- Report authenticity: the AI-assisted narrative is limited to finding fields,
+  keeping every report consistent and reviewable.
+- Chat input styling unified with the audit composer (dark card, accent focus).
+
+### Fixed
+
+- The desktop finally reflects the live config: report and dashboard read the
+  current session rather than going stale.
+- Continuous conversations no longer duplicate the injected "current state"
+  block in the model history; `_clean_history` stores only real turns, keeping
+  the prompt cache stable across turns.
+- The chat textarea rendered as an unstyled white box; it now matches the rest
+  of the interface.
+- Resizable dividers no longer shift the three-column layout (they are
+  absolute overlays, not grid tracks).
+
+### CI / packaging
+
+- Repository URLs corrected to `NahuelGomez-Dev/SplitAgent`; license migrated to
+  SPDX (`MIT`) with `license-files`, removing the setuptools deprecation warning.
+- Secret scanner runs in CI (`check_secrets.py --all`) and `scripts/` is linted.
+- README badges (CI, PyPI, Python, license) and `pip install splitagent` quick
+  start.
+
+### Notes
+
+- For **authorised security testing only**.
+
 ## [0.0.1] - 2026-10-01
 
 First public release. An autonomous dual-team (purple-team) security

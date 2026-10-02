@@ -145,8 +145,12 @@ class BaseAgent:
                 await self.context.add_checkpoint(
                     self.name, result.summary, result.removed, result.preserved
                 )
-                # Rewrite history so future turns use the compacted view.
-                self.history = [m for m in messages if m.role != "system"]
+                # Rewrite history so future turns use the compacted view. The
+                # task-injected "current state" blocks are scaffolding, not part
+                # of the conversation, so they are dropped here too.
+                self.history = [
+                    m for m in messages if m.role != "system" and not getattr(m, "_injected", False)
+                ]
 
         report = context_report(messages, self.policy, self.last_usage)
         self._trace("context", **report)
@@ -165,6 +169,7 @@ class BaseAgent:
         messages.extend(self.history[-self.history_limit :])
         message = ChatMessage(role="user", content=self._task_with_context(task))
         message._task_base = task  # type: ignore[attr-defined]
+        message._injected = True  # type: ignore[attr-defined]
         messages.append(message)
         return messages
 
@@ -392,6 +397,12 @@ class BaseAgent:
                 messages.append(tool_message)
                 self.history.append(tool_message)
 
+        # Record the user's own words in the durable history (the task message
+        # also carried the volatile "current state" block). Rebuilding a clean
+        # history every turn keeps a continuous conversation from accumulating a
+        # duplicated system/state prompt on each request.
+        self.history = self._clean_history(messages)
+
         if not final_text:
             result.hit_step_limit = True
             final_text = self._fallback_summary()
@@ -411,6 +422,26 @@ class BaseAgent:
             hit_step_limit=result.hit_step_limit,
         )
         return result
+
+    def _clean_history(self, messages: list[ChatMessage]) -> list[ChatMessage]:
+        """The durable conversation: no system prompt, no injected state blocks.
+
+        The task message is replaced by its user-written base so the next turn
+        re-injects fresh volatile context instead of replaying a stale copy.
+        """
+        cleaned: list[ChatMessage] = []
+        for message in messages:
+            if message.role == "system":
+                continue
+            base = getattr(message, "_task_base", None)
+            if getattr(message, "_injected", False) and base is not None:
+                message.content = base
+                cleaned.append(message)
+            elif getattr(message, "_injected", False):
+                continue
+            else:
+                cleaned.append(message)
+        return cleaned
 
     def _fallback_summary(self) -> str:
         """Last resort when even the wrap-up turn produced no text.

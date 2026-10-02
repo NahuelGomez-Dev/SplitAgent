@@ -77,8 +77,17 @@ async def test_record_finding(tmp_path):
         title="Missing CSP",
         description="No content security policy",
         cvss_vector="CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N",
+        cwe="CWE-693",
+        owasp="A05:2021 - Security Misconfiguration",
+        impact="Clickjacking and injection are harder to block.",
+        reproduction="1. curl -I http://localhost/",
     )
     assert result["recorded"] is True
     assert result["cvss_score"] == 6.1
+    finding = ctx.context.state.findings[0]
+    assert finding.cwe == "CWE-693"
+    assert finding.owasp == "A05:2021 - Security Misconfiguration"
+    assert finding.impact.startswith("Clickjacking")
+    assert finding.reproduction.startswith("1.")
     listing = _list_findings(ctx)
     assert listing["count"] == 1
