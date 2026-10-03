@@ -1,0 +1,62 @@
+name: Release
+
+# Publishing is triggered by pushing a version tag (e.g. v0.0.2), or manually.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install build
+      - run: python -m build
+      - name: Check the wheel contains the web assets
+        run: |
+          python - <<'PY'
+          import glob, zipfile
+          wheel = glob.glob("dist/*.whl")[0]
+          names = zipfile.ZipFile(wheel).namelist()
+          needed = [
+              "splitagent/desktop/web/index.html",
+              "splitagent/desktop/web/styles.css",
+              "splitagent/desktop/web/app.js",
+              "splitagent/desktop/web/assets/Inter.ttf",
+          ]
+          missing = [n for n in needed if n not in names]
+          if missing:
+              raise SystemExit(f"missing from wheel: {missing}")
+          print(f"{wheel}: all web assets present")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: [build]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write  # PyPI Trusted Publishing (OIDC), no token needed
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # Set this once the project exists on PyPI and a trusted publisher is
+          # configured (repo + workflow + environment "pypi"). Leave enabled.
+          packages-dir: dist
+          # password is not needed with Trusted Publishing.
