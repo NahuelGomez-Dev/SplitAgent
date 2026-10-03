@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -697,13 +698,19 @@ def build_json(state: SessionState) -> str:
     return json.dumps(payload, indent=2, ensure_ascii=False)
 
 
+def safe_stem(value: str, fallback: str = "report") -> str:
+    """A filesystem-safe fragment: no separators, no traversal, no control chars."""
+    cleaned = re.sub(r"[^A-Za-z0-9._-]", "_", str(value or "")).strip("._")
+    return cleaned[:80] or fallback
+
+
 def write_reports(
     state: SessionState, settings: ReportSettings, output_dir: Path | None = None
 ) -> list[Path]:
     directory = output_dir or Path(settings.output_dir)
     directory.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    stem = f"{state.name}-{state.id}-{stamp}"
+    stem = f"{safe_stem(state.name, 'splitagent')}-{safe_stem(state.id, 'session')}-{stamp}"
     written: list[Path] = []
     for fmt in settings.formats:
         fmt = fmt.lower()

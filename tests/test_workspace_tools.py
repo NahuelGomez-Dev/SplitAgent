@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from splitagent.config import ExecutionConfig, ProjectConfig, RunConfig, TargetConfig
 from splitagent.core.context import SharedContext
 from splitagent.core.workspace import workspace_for
@@ -293,4 +295,68 @@ def test_dangerous_workspace_tools_are_not_parallel_safe(tmp_path):
     assert tools["run_tool"].parallel_safe is False
     # Read-only ones may run concurrently.
     assert tools["workspace_read"].parallel_safe is True
-    assert tools["workspace_info"].parallel_safe is True
+
+
+# --------------------------------------------------------------------------- #
+# scope enforcement (run_tool / install_tool must obey target.scope)
+# --------------------------------------------------------------------------- #
+def _scoped_ctx(tmp_path: Path, scope: list[str]) -> ToolContext:
+    project = ProjectConfig()
+    ws = workspace_for(project, base=tmp_path)
+    ws.ensure()
+    return ToolContext(
+        target=TargetConfig(url="http://localhost", scope=scope),
+        run=RunConfig(allow_network=False),
+        context=SharedContext.create(target="http://localhost", directory=tmp_path),
+        settings={"workspace": ws, "project": project},
+    )
+
+
+def test_run_command_refuses_an_out_of_scope_host(tmp_path):
+    from splitagent.errors import ScopeError
+
+    ctx = _scoped_ctx(tmp_path, ["localhost"])
+    with pytest.raises(ScopeError):
+        _run_command(ctx, ["nmap", "-sV", "scanme.nmap.org"])
+    with pytest.raises(ScopeError):
+        _run_command(ctx, ["curl", "http://evil.example.com/x"])
+
+
+def test_run_command_allows_an_in_scope_host(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "splitagent.tools.workspace_tools.run_workspace_command",
+        lambda ws, cmd, timeout=300, cwd_kind="tools": {"ok": True, "command": " ".join(cmd)},
+    )
+    ctx = _scoped_ctx(tmp_path, ["localhost"])
+    result = _run_command(ctx, ["nmap", "-sV", "localhost"])
+    assert result["backend"] == "local"
+
+
+def test_install_tool_refuses_an_out_of_scope_remote(tmp_path):
+    from splitagent.errors import ScopeError
+
+    ctx = _scoped_ctx(tmp_path, ["localhost"])
+    with pytest.raises(ScopeError):
+        _install_tool(ctx, "git", "https://github.com/evil/repo")
+
+
+def test_scope_hosts_extraction(tmp_path):
+    from splitagent.tools.workspace_tools import _scope_hosts_from_argv
+
+    found = _scope_hosts_from_argv(
+        [
+            "nmap",
+            "-sV",
+            "10.0.0.5",
+            "http://target.example.com/x",
+            "git@github.com:o/r.git",
+            "-p",
+            "80",
+        ]
+    )
+    assert "10.0.0.5" in found
+    assert "http://target.example.com/x" in found
+    assert "github.com" in found
+    # Flags and bare numbers are not hosts.
+    assert "80" not in found
+    assert "-p" not in found

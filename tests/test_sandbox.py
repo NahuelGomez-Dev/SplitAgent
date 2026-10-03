@@ -108,6 +108,31 @@ def test_infer_url_without_a_mapping():
     assert sandbox._infer_url() == ""
 
 
+def test_presets_publish_host_port_to_container_port():
+    """port_map is {host: container}: dvwa listens on 80, exposed on 8080."""
+    dvwa = TARGET_PRESETS["dvwa"]
+    assert dvwa["port_map"] == {"8080": 80}
+    assert dvwa["url"] == "http://localhost:8080"
+
+
+async def test_up_publishes_in_host_container_order(fake_docker, monkeypatch):
+    captured: list[str] = []
+
+    async def fake_run(self, *args: str, check: bool = False):
+        captured.append(" ".join(args))
+        if args and args[0] == "network":
+            return 0, "bridge", ""
+        if args and args[0] == "run":
+            return 0, "cid123", ""
+        return 0, "", ""
+
+    monkeypatch.setattr(DockerSandbox, "_run", fake_run)
+    sandbox = _sandbox(port_map={"8080": 80})
+    await sandbox.up()
+    run_call = next(c for c in captured if " run " in f" {c} ")
+    assert "-p 8080:80" in run_call
+
+
 # --------------------------------------------------------------------------- #
 # lifecycle with a scripted docker
 # --------------------------------------------------------------------------- #

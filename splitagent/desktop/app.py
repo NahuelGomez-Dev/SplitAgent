@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import re
 import threading
 import time
 from datetime import datetime, timezone
@@ -42,6 +43,68 @@ from splitagent.llm.types import ChatMessage
 
 WEB_DIR = Path(__file__).parent / "web"
 FLUSH_INTERVAL = 0.06
+# The planner is one short call; past this we use the deterministic fallback.
+PLANNER_TIMEOUT_SECONDS = 15.0
+
+
+def _extract_json_object(text: str) -> dict[str, Any]:
+    """Pull the first JSON object out of a model reply.
+
+    Providers without a JSON mode sometimes wrap the object in prose or a
+    fenced code block; we tolerate all of that and fail soft (empty dict).
+    """
+    if not text:
+        return {}
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    candidate = fenced.group(1) if fenced else None
+    if candidate is None:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start == -1 or end <= start:
+            return {}
+        candidate = text[start : end + 1]
+    try:
+        parsed = json.loads(candidate)
+    except (ValueError, TypeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _compose_brief_instructions(brief: dict[str, Any]) -> str:
+    """Turn the audit brief into operator instructions for the agents.
+
+    This is what makes the brief actually reach the Red/Blue agents instead of
+    being lost as a project name.
+    """
+    if not isinstance(brief, dict):
+        return ""
+    lines: list[str] = []
+    label = {
+        "objective": "Objective",
+        "crown_jewels": "What matters most",
+        "authorization": "Authorization",
+        "goal": "Engagement goal",
+        "exclude_areas": "Areas/endpoints to exclude",
+        "window": "Window / rate constraints",
+        "noise": "Noise profile",
+        "notes": "Additional notes",
+    }
+    for key, title in label.items():
+        value = brief.get(key)
+        if value is None:
+            continue
+        if isinstance(value, list):
+            value = ", ".join(str(v) for v in value if str(v).strip())
+        value = str(value).strip()
+        if value:
+            lines.append(f"- {title}: {value}")
+    scope_doc = str(brief.get("scope_document") or "").strip()
+    if scope_doc:
+        lines.append("- Operator scope document:")
+        lines.append(scope_doc)
+    if not lines:
+        return ""
+    return "=== ENGAGEMENT BRIEF ===\n" + "\n".join(lines)
 
 
 async def _fetch_models_async(settings: LLMSettings) -> list[dict[str, str]]:
@@ -85,6 +148,7 @@ class DesktopApp:
         self._chat_events: list[dict[str, Any]] = []
         self._chat_done = False
         self._toolbox_thread: threading.Thread | None = None
+        self._queue_lock = threading.Lock()
 
     # -- lifecycle --------------------------------------------------------- #
     def run(self) -> None:
@@ -127,9 +191,10 @@ class DesktopApp:
         return self._audit_thread is not None and self._audit_thread.is_alive()
 
     # -- JS bridge helpers ------------------------------------------------- #
+    # Threads that feed the bridge: the audit worker, the chat worker and the
+    # toolbox worker all push into the same queue. Every read/modify is done
+    # under a lock so a batch can never be duplicated or dropped mid-flush.
     def _emit(self, batch: list[dict[str, Any]]) -> None:
-        if batch:
-            self._chat_events.extend(batch)
         if not batch or self.window is None:
             return
         payload = json.dumps(batch, ensure_ascii=False, default=str)
@@ -139,18 +204,31 @@ class DesktopApp:
         except Exception:  # pragma: no cover - window may be closing
             pass
 
+    def _emit_chat(self, batch: list[dict[str, Any]]) -> None:
+        """Chat events go only to the polled buffer, never the live bridge.
+
+        Delivering them both ways duplicated every event (the bridge pushed it
+        and the poll replayed it). The front-end polls ``chat_state`` for chat,
+        so this is the single channel.
+        """
+        if batch:
+            with self._queue_lock:
+                self._chat_events.extend(batch)
+
     def _push(self, event: dict[str, Any]) -> None:
-        self._queue.append(event)
+        with self._queue_lock:
+            self._queue.append(event)
 
     def _flush(self, force: bool = False) -> None:
-        if not self._queue:
-            return
         now = time.monotonic()
-        if not force and (now - self._last_flush) < FLUSH_INTERVAL:
-            return
-        self._last_flush = now
-        batch = self._queue[:]
-        del self._queue[:]
+        with self._queue_lock:
+            if not self._queue:
+                return
+            if not force and (now - self._last_flush) < FLUSH_INTERVAL:
+                return
+            self._last_flush = now
+            batch = self._queue[:]
+            del self._queue[:]
         self._emit(batch)
 
     # -- audit ------------------------------------------------------------- #
@@ -255,6 +333,185 @@ class DesktopApp:
             ]
         )
 
+    # -- engagement planner (audit brief) ---------------------------------- #
+    def build_audit_plan(self, brief: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Turn an operator brief into a plan, with the model doing the adapting.
+
+        The AI writes the plan (phases, techniques, cautions) because a fixed
+        template cannot fit every environment. Hard facts — scope and
+        out_of_scope — come from the brief and are enforced afterwards: the
+        plan is sanitised so a hallucinated host can never enter scope. If the
+        model fails or is slow, a deterministic fallback plan is returned so the
+        audit always has something to approve.
+        """
+        brief = brief or {}
+        fallback = self._fallback_plan(brief)
+        try:
+            plan = asyncio.run(self._plan_async(brief))
+        except Exception as exc:
+            fallback["source"] = "fallback"
+            fallback["note"] = f"planner unavailable: {type(exc).__name__}"
+            return fallback
+        if not plan:
+            fallback["source"] = "fallback"
+            fallback["note"] = "planner returned no usable plan"
+            return fallback
+        return self._sanitise_plan(plan, brief)
+
+    async def _plan_async(self, brief: dict[str, Any]) -> dict[str, Any]:
+        from splitagent.agents.prompts import build_audit_brief_prompt
+
+        project = self.project
+        context = SharedContext.create(
+            target=project.target.url
+            or ", ".join(project.target.effective_hosts())
+            or "unspecified",
+            target_kind=project.target.kind,
+            scope=project.target.scope or project.target.effective_hosts(),
+            name="planner",
+            model=self.global_config.llm.model,
+            provider=self.global_config.llm.provider,
+        )
+        system = build_audit_brief_prompt(project, context)
+        user = "=== BRIEF ===\n" + json.dumps(brief, ensure_ascii=False, indent=2)
+        async with LLMClient(self.global_config.llm) as client:
+            message, _usage = await asyncio.wait_for(
+                client.complete(
+                    [
+                        ChatMessage(role="system", content=system),
+                        ChatMessage(role="user", content=user),
+                    ]
+                ),
+                timeout=PLANNER_TIMEOUT_SECONDS,
+            )
+        return _extract_json_object(message.content)
+
+    def _sanitise_plan(self, plan: dict[str, Any], brief: dict[str, Any]) -> dict[str, Any]:
+        """Keep the AI's judgement but enforce the operator's hard facts."""
+
+        def _as_list(value: Any) -> list[str]:
+            if isinstance(value, list):
+                return [str(v).strip() for v in value if str(v).strip()]
+            if isinstance(value, str):
+                return [p.strip() for p in value.split(",") if p.strip()]
+            return []
+
+        out_of_scope = {h.lower() for h in _as_list(brief.get("out_of_scope"))}
+        scope = _as_list(brief.get("scope")) or _as_list(plan.get("scope"))
+        # A host can never be both in scope and explicitly excluded.
+        scope = [h for h in scope if h.lower() not in out_of_scope]
+        noise = str(plan.get("noise") or brief.get("noise") or "normal").lower()
+        if noise not in ("stealth", "normal", "aggressive"):
+            noise = "normal"
+        return {
+            "objective": str(plan.get("objective") or brief.get("objective") or "Security audit"),
+            "scope": scope,
+            "out_of_scope": _as_list(brief.get("out_of_scope"))
+            or _as_list(plan.get("out_of_scope")),
+            "phases": _as_list(plan.get("phases")),
+            "techniques": _as_list(plan.get("techniques")),
+            "cautions": _as_list(plan.get("cautions")),
+            "noise": noise,
+            "source": "ai",
+            "awaiting_approval": True,
+        }
+
+    def _fallback_plan(self, brief: dict[str, Any]) -> dict[str, Any]:
+        """A deterministic plan used when the model is unavailable."""
+        kind = str(brief.get("kind") or self.project.target.kind or "web")
+        goal = str(brief.get("goal") or "full audit")
+        common = ["reconnaissance", "enumeration", "targeted validation", "report"]
+        by_kind = {
+            "web": [
+                "map the web surface (crawl, routes, forms)",
+                "audit authentication and session handling",
+                "test input-handling endpoints (injection, XSS)",
+            ],
+            "api": [
+                "enumerate API endpoints and schemas",
+                "audit object-level authorisation (IDOR)",
+                "test authentication, rate limiting and input validation",
+            ],
+            "network": [
+                "service/version discovery",
+                "sweep all ports for exposed services",
+                "validate known CVEs on discovered versions",
+            ],
+            "repo": [
+                "inventory the repository and dependencies",
+                "review auth, secrets and injection sinks",
+                "check dependency vulnerabilities",
+            ],
+        }
+        return {
+            "objective": str(brief.get("objective") or f"{goal} of the {kind} target"),
+            "scope": [str(s).strip() for s in brief.get("scope", []) if str(s).strip()],
+            "out_of_scope": [
+                str(s).strip() for s in brief.get("out_of_scope", []) if str(s).strip()
+            ],
+            "phases": by_kind.get(kind, common),
+            "techniques": [],
+            "cautions": [
+                "Stay strictly within the authorised scope.",
+                "Non-destructive testing only.",
+            ]
+            + ([str(brief["window"])] if brief.get("window") else []),
+            "noise": str(brief.get("noise") or "normal"),
+            "source": "fallback",
+            "awaiting_approval": True,
+        }
+
+    def brief_chat(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """A bounded scoping assistant for the audit brief.
+
+        It answers questions and can suggest brief adjustments, but it has no
+        tools and never starts an audit — the audit begins only when the
+        operator approves a plan.
+        """
+        message = str((payload or {}).get("message") or "").strip()
+        brief = (payload or {}).get("brief") or {}
+        if not message:
+            return {"ok": False, "error": "empty message"}
+        try:
+            text = asyncio.run(self._brief_chat_async(message, brief))
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {"ok": True, "text": text}
+
+    async def _brief_chat_async(self, message: str, brief: dict[str, Any]) -> str:
+        from splitagent.agents.prompts import build_planner_chat_prompt
+
+        project = self.project
+        context = SharedContext.create(
+            target=project.target.url or "unspecified",
+            target_kind=project.target.kind,
+            scope=project.target.scope or project.target.effective_hosts(),
+            name="planner",
+            model=self.global_config.llm.model,
+            provider=self.global_config.llm.provider,
+        )
+        # The *chat* prompt: conversational, not the JSON-only plan prompt.
+        system = build_planner_chat_prompt(project, context)
+        user = (
+            "=== CURRENT BRIEF ===\n"
+            + json.dumps(brief, ensure_ascii=False, indent=2)
+            + "\n\n=== OPERATOR ===\n"
+            + message
+            + "\n\nAnswer briefly in the operator's language. If the brief should "
+            "change, list concrete adjustments. You run no tools and start nothing."
+        )
+        async with LLMClient(self.global_config.llm) as client:
+            result, _usage = await asyncio.wait_for(
+                client.complete(
+                    [
+                        ChatMessage(role="system", content=system),
+                        ChatMessage(role="user", content=user),
+                    ]
+                ),
+                timeout=PLANNER_TIMEOUT_SECONDS,
+            )
+        return result.content or "(no answer)"
+
     def _build_project(self, options: dict[str, Any]) -> ProjectConfig:
         project = copy.deepcopy(self.project)
         target = options.get("target") or {}
@@ -318,6 +575,21 @@ class DesktopApp:
                 project.auth.cookies = str(auth.get("cookies") or "")
             if isinstance(auth.get("headers"), dict):
                 project.auth.headers = {str(k): str(v) for k, v in auth["headers"].items() if k}
+        brief = options.get("brief")
+        if isinstance(brief, dict):
+            instructions = _compose_brief_instructions(brief)
+            if instructions:
+                project.workspace.instructions = (
+                    (project.workspace.instructions + "\n\n" + instructions).strip()
+                    if project.workspace.instructions
+                    else instructions
+                )
+            noise = str(brief.get("noise") or "").lower()
+            if noise == "stealth":
+                project.run.tool_concurrency = 1
+                project.run.max_duration_minutes = max(project.run.max_duration_minutes, 120)
+            elif noise == "aggressive":
+                project.run.tool_concurrency = max(project.run.tool_concurrency, 8)
         if options.get("objective"):
             project.name = str(options["objective"])[:60] or project.name
         return project
@@ -359,7 +631,8 @@ class DesktopApp:
         Pushes over the bridge are best-effort; this lets the front-end replay
         whatever it missed, so a reply can never be lost mid-stream.
         """
-        events = list(self._chat_events)
+        with self._queue_lock:
+            events = list(self._chat_events)
         return {
             "ok": True,
             "running": self.is_chatting(),
@@ -372,17 +645,20 @@ class DesktopApp:
         try:
             asyncio.run(self._chat_message(message))
         except asyncio.CancelledError:
-            self._emit([{"type": "chat.end", "data": {"ok": False, "error": "cancelled"}}])
+            self._emit_chat([{"type": "chat.end", "data": {"ok": False, "error": "cancelled"}}])
+            self._chat_done = True
         except Exception as exc:
-            self._push(
-                {
-                    "type": "error",
-                    "agent": "assistant",
-                    "data": {"text": f"{type(exc).__name__}: {exc}"},
-                }
+            self._emit_chat(
+                [
+                    {
+                        "type": "error",
+                        "agent": "assistant",
+                        "data": {"text": f"{type(exc).__name__}: {exc}"},
+                    },
+                    {"type": "chat.end", "data": {"ok": False, "error": str(exc)}},
+                ]
             )
-            self._flush(force=True)
-            self._emit([{"type": "chat.end", "data": {"ok": False, "error": str(exc)}}])
+            self._chat_done = True
 
     async def _chat_message(self, message: str) -> None:
         return await self._chat_async(message)
@@ -399,8 +675,9 @@ class DesktopApp:
                 provider=self.global_config.llm.provider,
             )
         bus = EventBus()
-        bus.subscribe(lambda event: self._push(_event_dict(event)))
-        self._emit([{"type": "chat.start", "data": {"text": message}}])
+        # Chat events feed only the polled buffer (single channel, no bridge).
+        bus.subscribe(lambda event: self._emit_chat([_event_dict(event)]))
+        self._emit_chat([{"type": "chat.start", "data": {"text": message}}])
 
         self._chat_loop = asyncio.get_running_loop()
         async with LLMClient(self.global_config.llm) as client:
@@ -418,11 +695,9 @@ class DesktopApp:
             self._chat_task = asyncio.ensure_future(agent.run(message))
             while not self._chat_task.done():
                 await asyncio.sleep(0.04)
-                self._flush()
             result = self._chat_task.result()
             self._chat_history = list(agent.history)
-        self._flush(force=True)
-        self._emit([{"type": "chat.end", "data": {"ok": True, "text": result.text}}])
+        self._emit_chat([{"type": "chat.end", "data": {"ok": True, "text": result.text}}])
         self._chat_done = True
 
     # -- toolbox ----------------------------------------------------------- #
@@ -514,7 +789,9 @@ class DesktopApp:
                 return
 
             config.installed = True
+            # ``config`` lives on the project, so persist the project too.
             save_global_config(self.global_config)
+            save_project_config(self.project, project_config_path())
             status = self.toolbox_status()["status"]
             self._emit([{"type": "toolbox.ready", "data": status}])
             self._flush(force=True)
@@ -844,6 +1121,11 @@ class DesktopApp:
         report_settings = self.project.report
         if formats:
             report_settings.formats = list(formats)
-        paths = write_reports(self.session.state, report_settings, Path(report_settings.output_dir))
+        try:
+            paths = write_reports(
+                self.session.state, report_settings, Path(report_settings.output_dir)
+            )
+        except (OSError, ValueError) as exc:
+            return {"ok": False, "error": f"could not write report: {exc}"}
         self.report_paths = [str(p.resolve()) for p in paths]
         return {"ok": True, "reports": self.report_paths}

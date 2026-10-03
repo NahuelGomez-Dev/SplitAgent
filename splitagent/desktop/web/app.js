@@ -23,7 +23,10 @@ const state = {
   runningTools: { red: 0, blue: 0, assistant: 0 },
   toolLog: { red: [], blue: [], assistant: [] },
   chatTurns: 0,
+  objective: "",
   models: [],
+  connected: [],
+  popular: [],
   modelsLoaded: false,
   palette: { items: [], index: 0, filtered: [], onPick: null },
   wizard: { step: 0, kind: "web", depth: "standard" },
@@ -377,8 +380,18 @@ function addTool(agent, data) {
       <span class="tool-chevron">\u203a</span>
     </div>
     <div class="tool-body"><pre class="tool-out">running...</pre></div>`;
-  const callKey = data.call_id || Math.random().toString(36);
+  // Always key by a stable id: if the backend omitted call_id, derive one from
+  // the tool + a sequence so finishTool can still find and settle this call.
+  const callKey =
+    data.call_id != null && data.call_id !== ""
+      ? String(data.call_id)
+      : `${data.tool || "tool"}#${(state._toolSeq = (state._toolSeq || 0) + 1)}`;
   state.tools[callKey] = block;
+  block.dataset.call = callKey;
+  // FIFO of in-flight calls per agent, so a result without a call_id can still
+  // settle the oldest pending tool instead of leaking the running counter.
+  state.pendingTools = state.pendingTools || {};
+  (state.pendingTools[agent] = state.pendingTools[agent] || []).push(callKey);
   // Detail lives inside the collapsed group, never directly in the timeline.
   block.classList.add("hidden");
   const groupItem = document.createElement("div");
@@ -404,7 +417,15 @@ function addTool(agent, data) {
       if (card) card.remove();
     } else {
       detail.classList.add("show");
-      if (card) detail.appendChild(card);
+      if (card) {
+        // The card is hidden while parked in state; reveal it once it is the
+        // expanded detail. (.hidden uses !important, so it must be removed.)
+        card.classList.remove("hidden");
+        detail.appendChild(card);
+      } else {
+        // No card kept for this call: surface whatever output the row has.
+        detail.textContent = detail.dataset.output || "";
+      }
     }
   });
   getRsLog(agent).appendChild(groupItem);
@@ -432,7 +453,17 @@ function getRsLog(agent) {
 }
 
 function finishTool(agent, data) {
-  const block = state.tools[data.call_id];
+  // Resolve the call: by id when present, otherwise the oldest in-flight call
+  // for this agent (the backend omits call_id on some paths).
+  let callKey = data.call_id != null && data.call_id !== "" ? String(data.call_id) : null;
+  const pending = (state.pendingTools && state.pendingTools[agent]) || [];
+  if (!callKey || !state.tools[callKey]) {
+    callKey = pending.shift() || callKey;
+  } else {
+    const idx = pending.indexOf(callKey);
+    if (idx !== -1) pending.splice(idx, 1);
+  }
+  const block = callKey ? state.tools[callKey] : null;
   if (!block) return;
   const status = $(".tool-status", block);
   const out = $(".tool-out", block);
@@ -441,9 +472,10 @@ function finishTool(agent, data) {
   status.className = "tool-status " + (isError ? "error" : "done");
   status.textContent = isError ? "!" : "\u2713";
   out.textContent = text;
+  block.dataset.output = text;
   // Mirror the state on the group row.
   const row = document.querySelector(
-    `.rs-log-item[data-call="${CSS.escape(String(data.call_id || ""))}"]`
+    `.rs-log-item[data-call="${CSS.escape(callKey)}"]`
   );
   if (row) {
     const rowStatus = $(".tool-status", row);
@@ -519,9 +551,10 @@ function traceDetail(kind, data) {
 
 function renderTrace() {
   const panel = $("#panel-trace");
-  const body = panel.querySelector(".trace-list");
   const trace = state.trace || [];
+  let list = panel.querySelector(".trace-list");
   if (!trace.length) {
+    if (list) list.innerHTML = "";
     if (!panel.querySelector(".trace-empty")) {
       const empty = document.createElement("div");
       empty.className = "trace-empty";
@@ -532,25 +565,32 @@ function renderTrace() {
   }
   const emptyEl = panel.querySelector(".trace-empty");
   if (emptyEl) emptyEl.remove();
-  let list = body;
   if (!list) {
     list = document.createElement("div");
     list.className = "trace-list";
     panel.appendChild(list);
   }
-  // Append only the newest entry (keeps rendering cheap during a run).
-  const entry = trace[trace.length - 1];
-  if (list.childElementCount === trace.length) return;
-  const el = document.createElement("div");
-  el.className = `trace-item kind-${entry.kind}`;
-  el.innerHTML = `
-    <div class="ti-head">
-      <span class="ti-kind">${escapeHtml(entry.kind)}</span>
-      <span class="ti-time">${escapeHtml(entry.ts)}</span>
-    </div>
-    <pre>${escapeHtml(traceDetail(entry.kind, entry.data))}</pre>`;
-  list.appendChild(el);
-  panel.scrollTop = panel.scrollHeight;
+  // Keep only the newest 400 rows; the buffer is capped the same way, so the
+  // DOM can never drift out of sync with state.trace.
+  if (list.childElementCount > trace.length) {
+    while (list.childElementCount > trace.length) list.removeChild(list.firstChild);
+  }
+  const start = list.childElementCount;
+  for (let i = start; i < trace.length; i += 1) {
+    const entry = trace[i];
+    const el = document.createElement("div");
+    el.className = `trace-item kind-${entry.kind}`;
+    el.innerHTML = `
+      <div class="ti-head">
+        <span class="ti-kind">${escapeHtml(entry.kind)}</span>
+        <span class="ti-time">${escapeHtml(entry.ts)}</span>
+      </div>
+      <pre>${escapeHtml(traceDetail(entry.kind, entry.data))}</pre>`;
+    list.appendChild(el);
+  }
+  // The scroll container is the review body, not the panel itself.
+  const scroller = panel.closest(".review-body") || panel;
+  scroller.scrollTop = scroller.scrollHeight;
 }
 
 async function dumpTrace() {
@@ -1032,7 +1072,8 @@ function addActivity(text, isError = false) {
   el.className = "activity-line" + (isError ? " err" : "");
   el.textContent = text;
   panel.appendChild(el);
-  panel.scrollTop = panel.scrollHeight;
+  const scroller = panel.closest(".review-body") || panel;
+  scroller.scrollTop = scroller.scrollHeight;
 }
 
 function setPhase(phase) {
@@ -1044,7 +1085,22 @@ function setRunning(running) {
   state.running = running;
   $("#btn-run").classList.toggle("hidden", running);
   $("#btn-stop").classList.toggle("hidden", !running);
-  $("#objective").disabled = running;
+}
+
+/* The objective is no longer typed in the audit bar: it comes from the plan.
+   The button shows it and points the operator to the planner when empty. */
+function setObjective(text) {
+  state.objective = (text || "").trim();
+  const btn = $("#btn-objective");
+  if (!btn) return;
+  if (!state.objective) {
+    btn.textContent = "Objective: —";
+    btn.classList.add("muted");
+  } else {
+    const short = state.objective.length > 60 ? state.objective.slice(0, 60) + "…" : state.objective;
+    btn.textContent = `Objective: ${short}`;
+    btn.classList.remove("muted");
+  }
 }
 function setChatting(chatting) {
   state.chatting = chatting;
@@ -1234,17 +1290,23 @@ function handleEvent(event) {
       // continuous conversation instead of spawning a separate chat.
       ensureMsg("assistant");
       break;
-    case "chat.end":
+    case "chat.end": {
       setChatting(false);
+      // Capture what actually streamed before finalize() wipes the buffer, so
+      // the fallback only fires when the stream produced nothing.
+      const streamed = state.rawText.assistant || "";
       finalize("assistant");
       finalizeThinking("assistant");
       state.chatTurns = (state.chatTurns || 0) + 1;
-      if (data && data.ok && data.text && !state.rawText.assistant) {
-        // Fallback: render the final text directly if streamed text was lost.
+      if (data && data.ok && data.text && !streamed.trim()) {
         appendText("assistant", data.text);
         finalize("assistant");
       }
       if (data && data.error && data.error !== "cancelled") toast(data.error, true);
+      break;
+    }
+    case "chat.plan":
+      renderChatPlan(data && data.plan ? data.plan : {});
       break;
     case "chat.reset":
       break;
@@ -1288,6 +1350,20 @@ function resetStream() {
   $("#panel-mitigations").innerHTML = '<div class="panel-empty">No mitigations yet.</div>';
   $("#panel-activity").innerHTML = "";
   $("#panel-report").innerHTML = '<div class="panel-empty">The report is generated at the end of a run.</div>';
+  // Reset the panels and status that survive across runs.
+  const tracePanel = $("#panel-trace");
+  const traceList = tracePanel.querySelector(".trace-list");
+  if (traceList) traceList.innerHTML = "";
+  if (!tracePanel.querySelector(".trace-empty")) {
+    const empty = document.createElement("div");
+    empty.className = "trace-empty";
+    empty.textContent = "Nothing captured yet.";
+    tracePanel.appendChild(empty);
+  }
+  state.reportPaths = [];
+  $("#btn-open-reports").disabled = true;
+  $("#st-round").textContent = "round 0/0";
+  setPhase("idle");
   $("#count-findings").textContent = "0";
   $("#count-mitigations").textContent = "0";
   $("#st-events").textContent = "0 events";
@@ -1302,7 +1378,13 @@ function resetChat() {
         <svg viewBox="0 0 24 24"><path d="M3.5 5.5h17v10h-9l-4.5 4v-4H3.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
       </div>
       <h1>Pentest copilot</h1>
-      <p>Ask anything: plan an engagement, explain a vulnerability, inspect the target with tools, draft payloads, patches or report text.</p>
+      <p>Let's talk about the engagement first. Tell me what you want to test and what matters, and I'll propose a plan. Nothing runs until you approve it.</p>
+      <div class="suggestions">
+        <button class="suggestion">I want to test my web app — where do we start?</button>
+        <button class="suggestion">Help me scope a pentest for my target</button>
+        <button class="suggestion">What should I consider before testing?</button>
+        <button class="suggestion">Explain CVSS and how you score findings</button>
+      </div>
     </div>`;
   delete state.currentMsg.assistant;
   delete state.rawText.assistant;
@@ -1534,7 +1616,7 @@ async function pickModel(key) {
     return;
   }
   const entry = state.models.find((m) => m.provider === provider && m.id === model);
-  const conn = state.connected.find((p) => p.id === provider);
+  const conn = (state.connected || []).find((p) => p.id === provider);
   state.config = {
     ...state.config,
     provider,
@@ -1563,6 +1645,7 @@ const WIZ_HINTS = [
   "How should the agents run?",
   "Optional: credentials for authenticated testing.",
   "How deep should the audit go?",
+  "Optional brief: help the planner adapt to this environment.",
 ];
 
 function openWizard() {
@@ -1598,12 +1681,21 @@ function openWizard() {
     .map(([k, v]) => `${k}: ${v}`)
     .join("\n");
   $$('input[name="env"]').forEach((r) => (r.checked = r.value === (run.sandbox && run.sandbox.enabled ? "sandbox" : "existing")));
+  // Brief fields: reuse the last brief if we have one, else start empty.
+  const brief = state.brief || {};
+  $("#wiz-crown").value = brief.crown_jewels || "";
+  if ($("#wiz-goal")) $("#wiz-goal").value = brief.goal || "";
+  if ($("#wiz-noise")) $("#wiz-noise").value = brief.noise || "normal";
+  $("#wiz-areas-exclude").value = brief.exclude_areas || "";
+  $("#wiz-window").value = brief.window || "";
+  $("#wiz-authorization").value = brief.authorization || "";
+  $("#wiz-notes").value = brief.notes || "";
   setWizardStep(0);
   openModal("#modal-wizard");
 }
 
 function setWizardStep(step) {
-  state.wizard.step = Math.max(0, Math.min(4, step));
+  state.wizard.step = Math.max(0, Math.min(5, step));
   $$(".wstep").forEach((s) => s.classList.toggle("active", Number(s.dataset.step) === state.wizard.step));
   $$("#wiz-progress .wdot").forEach((d, i) => {
     d.classList.toggle("active", i === state.wizard.step);
@@ -1611,7 +1703,7 @@ function setWizardStep(step) {
   });
   $("#wiz-hint").textContent = WIZ_HINTS[state.wizard.step];
   $("#wiz-back").style.visibility = state.wizard.step === 0 ? "hidden" : "visible";
-  $("#wiz-next").textContent = state.wizard.step === 4 ? "Start audit" : "Next";
+  $("#wiz-next").textContent = state.wizard.step === 5 ? "Build plan" : "Next";
   if (state.wizard.step === 4) renderWizardSummary();
 }
 
@@ -1662,7 +1754,28 @@ async function wizardNext() {
     setWizardStep(4);
     return;
   }
+  if (step === 4) {
+    setWizardStep(5);
+    return;
+  }
   await startWizardAudit();
+}
+
+function collectBrief() {
+  return {
+    objective: $("#wiz-objective").value.trim(),
+    crown_jewels: $("#wiz-crown") ? $("#wiz-crown").value.trim() : "",
+    goal: $("#wiz-goal") ? $("#wiz-goal").value : "",
+    noise: $("#wiz-noise") ? $("#wiz-noise").value : "normal",
+    exclude_areas: $("#wiz-areas-exclude") ? $("#wiz-areas-exclude").value.trim() : "",
+    window: $("#wiz-window") ? $("#wiz-window").value.trim() : "",
+    authorization: $("#wiz-authorization") ? $("#wiz-authorization").value.trim() : "",
+    notes: $("#wiz-notes") ? $("#wiz-notes").value.trim() : "",
+    kind: state.wizard.kind,
+    scope: $("#wiz-scope").value.split(",").map((s) => s.trim()).filter(Boolean),
+    out_of_scope: $("#wiz-out").value.split(",").map((s) => s.trim()).filter(Boolean),
+    scope_document: (state.brief && state.brief.scope_document) || "",
+  };
 }
 
 function parseHeaders(text) {
@@ -1678,11 +1791,16 @@ function parseHeaders(text) {
   return headers;
 }
 
+/* The wizard no longer starts the audit directly: it saves the project, then
+   asks the planner (the AI) for a plan for this specific environment. The
+   operator approves or refines it before anything runs. */
 async function startWizardAudit() {
   const env = document.querySelector('input[name="env"]:checked')?.value || "sandbox";
   const depth = state.wizard.depth;
   const depthMap = { quick: { rounds: 1, steps: 6 }, standard: { rounds: 3, steps: 12 }, deep: { rounds: 5, steps: 20 } };
   const { rounds, steps } = depthMap[depth];
+  const brief = collectBrief();
+  state.brief = brief;
 
   const payload = {
     name: state.project.name,
@@ -1706,6 +1824,12 @@ async function startWizardAudit() {
       cookies: $("#wiz-cookies").value.trim(),
       headers: parseHeaders($("#wiz-headers").value),
     },
+    workspace: {
+      path: $("#wiz-ws-path").value.trim(),
+      allow_install: $("#wiz-ws-install").checked,
+      allow_external_tools: $("#wiz-ws-external").checked,
+      instructions: $("#wiz-ws-instructions").value.trim(),
+    },
   };
   const saved = await api("save_project", payload);
   if (saved && saved.ok) {
@@ -1713,27 +1837,149 @@ async function startWizardAudit() {
     renderTarget();
     fillProjectForm();
   }
-  payload.workspace = {
-    path: $("#wiz-ws-path").value.trim(),
-    allow_install: $("#wiz-ws-install").checked,
-    allow_external_tools: $("#wiz-ws-external").checked,
-    instructions: $("#wiz-ws-instructions").value.trim(),
-  };
-  const objective = $("#wiz-objective").value.trim();
-  $("#objective").value = objective;
+  setObjective(brief.objective);
   closeModals();
   setMode("audit");
-  const res = await api("start_audit", {
-    objective,
-    target: { url: payload.target.url, kind: payload.target.kind, scope: payload.target.scope },
-    run: { rounds, sandbox: payload.run.sandbox.enabled, allow_network: payload.run.allow_network },
-  });
+  await requestPlan(brief);
+}
+
+/* Ask the planner for a plan, show "generating…", then render it. */
+async function requestPlan(brief) {
+  const stream = $("#stream");
+  const empty = $("#stream-empty");
+  if (empty) empty.remove();
+  const pending = document.createElement("div");
+  pending.className = "plan-pending";
+  pending.id = "plan-pending";
+  pending.innerHTML = '<span class="spinner"></span> Generating a plan for this environment…';
+  stream.appendChild(pending);
+  stream.scrollTop = stream.scrollHeight;
+
+  const res = await api("build_audit_plan", brief);
+  const el = $("#plan-pending");
+  if (el) el.remove();
   if (!res || !res.ok) {
-    toast(res && res.error ? res.error : "could not start", true);
+    toast((res && res.error) || "could not build a plan", true);
+    renderAuditPlan({}, "fallback");
     return;
   }
-  setRunning(true);
-  addActivity("audit requested");
+  renderAuditPlan(res, res.source || "ai");
+  // Reset the planner chat so it reflects this new plan.
+  const log = $("#plan-chat-log");
+  if (log) {
+    log.innerHTML =
+      '<div class="panel-empty">Talk to the planner about the plan here. It only plans — it never tests.</div>';
+  }
+}
+
+/* Chat with the planner in the right-hand "Plan chat" panel. It only plans;
+   it never runs the audit. */
+function openPlanChat() {
+  // Make sure the right-hand panel is actually visible: the operator may have
+  // collapsed it, in which case focusing the tab alone shows nothing.
+  document.body.classList.remove("review-collapsed");
+  focusTab("plan");
+  const input = $("#plan-chat-input");
+  if (input) setTimeout(() => input.focus(), 40);
+}
+
+function planChatSystem(text) {
+  const log = $("#plan-chat-log");
+  if (!log) return;
+  const empty = $(".panel-empty", log);
+  if (empty) empty.remove();
+  log.insertAdjacentHTML(
+    "beforeend",
+    `<div class="ap-msg bot">${escapeHtml(text)}</div>`
+  );
+  log.scrollTop = log.scrollHeight;
+}
+
+async function sendPlanChat() {
+  const input = $("#plan-chat-input");
+  if (!input) return;
+  const message = input.value.trim();
+  if (!message) return;
+  input.value = "";
+  const log = $("#plan-chat-log");
+  log.insertAdjacentHTML("beforeend", `<div class="ap-msg user">${escapeHtml(message)}</div>`);
+  log.scrollTop = log.scrollHeight;
+  const thinking = document.createElement("div");
+  thinking.className = "ap-msg bot planner-thinking";
+  thinking.textContent = "Thinking…";
+  log.appendChild(thinking);
+  log.scrollTop = log.scrollHeight;
+  const res = await api("brief_chat", { message, brief: state.brief || {} });
+  thinking.remove();
+  log.insertAdjacentHTML(
+    "beforeend",
+    `<div class="ap-msg bot">${res && res.ok ? md(res.text) : escapeHtml((res && res.error) || "error")}</div>`
+  );
+  log.scrollTop = log.scrollHeight;
+  // Fold the clarification into the brief so the next plan reflects it.
+  if (res && res.ok && state.brief) {
+    state.brief.notes = [state.brief.notes, message].filter(Boolean).join(" | ");
+  }
+}
+
+function setScopeDoc(name, content) {
+  state.brief = state.brief || {};
+  state.brief.scope_document = content || "";
+  const label = $("#wiz-scope-name");
+  const clear = $("#wiz-scope-clear");
+  if (label) label.textContent = content ? `Attached: ${name}` : "No document attached.";
+  if (clear) clear.classList.toggle("hidden", !content);
+}
+
+/* The plan card for the Audit view: Approve & start, or refine via the brief. */
+function renderAuditPlan(plan, source) {
+  const stream = $("#stream");
+  finalize("red");
+  finalize("blue");
+  const card = document.createElement("div");
+  card.className = "chat-plan audit-plan";
+  const scope = (plan.scope || []).join(", ") || "see engagement config";
+  const out = (plan.out_of_scope || []).join(", ");
+  const phases = (plan.phases || []).map((p) => `<li>${escapeHtml(p)}</li>`).join("");
+  const techniques = (plan.techniques || []).map((p) => `<li>${escapeHtml(p)}</li>`).join("");
+  const cautions = (plan.cautions || []).map((p) => `<li>${escapeHtml(p)}</li>`).join("");
+  card.innerHTML = `
+    <div class="cp-head">
+      <span class="cp-badge">Proposed plan${source === "fallback" ? " · offline" : ""}</span>
+      <span class="cp-title">${escapeHtml(plan.objective || "Engagement")}</span>
+    </div>
+    <div class="cp-row"><span>In scope</span><code>${escapeHtml(scope)}</code></div>
+    ${out ? `<div class="cp-row"><span>Out of scope</span><code>${escapeHtml(out)}</code></div>` : ""}
+    ${plan.noise ? `<div class="cp-row"><span>Noise</span><code>${escapeHtml(plan.noise)}</code></div>` : ""}
+    ${phases ? `<div class="cp-phases"><div class="cp-sub">Phases</div><ol>${phases}</ol></div>` : ""}
+    ${techniques ? `<div class="cp-phases"><div class="cp-sub">Techniques</div><ul>${techniques}</ul></div>` : ""}
+    ${cautions ? `<div class="cp-phases"><div class="cp-sub">Cautions</div><ul>${cautions}</ul></div>` : ""}
+    <div class="cp-foot">
+      <span class="cp-note">Nothing is tested until you approve.</span>
+      <button class="btn ghost" id="ap-refine">Refine with chat</button>
+      <button class="btn ghost" id="ap-replan">Rebuild plan</button>
+      <button class="btn primary" id="ap-approve">Approve &amp; start</button>
+    </div>`;
+  stream.appendChild(card);
+  stream.scrollTop = stream.scrollHeight;
+
+  const approve = $("#ap-approve", card);
+  approve.addEventListener("click", () => {
+    approve.disabled = true;
+    approve.textContent = "Starting…";
+    if (plan.objective) setObjective(plan.objective);
+    startAudit(plan);
+  });
+  // Refining opens the planner chat in the right-hand panel, so the operator
+  // can talk about the plan without leaving the audit view.
+  $("#ap-refine", card).addEventListener("click", () => {
+    planChatSystem("Ask me anything about the plan or the environment. When you are happy, rebuild the plan or approve it.");
+    openPlanChat();
+  });
+  $("#ap-replan", card).addEventListener("click", async () => {
+    approve.disabled = true;
+    await requestPlan(state.brief || {});
+  });
 }
 
 /* ── settings: models & providers ───────────────────────── */
@@ -1868,7 +2114,7 @@ function renderSettingsModels() {
 
 function renderProviders() {
   const connectedList = $("#s-connected");
-  if (!state.connected.length) {
+  if (!(state.connected || []).length) {
     connectedList.innerHTML = '<div class="s-connected-empty">No providers connected yet.</div>';
   } else {
     connectedList.innerHTML = state.connected
@@ -2112,10 +2358,14 @@ async function saveProject() {
   toast("Project saved");
 }
 
-async function startAudit() {
+async function startAudit(plan) {
   if (state.running) return;
+  // Set synchronously: two handlers (composer + document) can otherwise both
+  // pass the guard before the first await resolves and start two audits.
+  setRunning(true);
+  setPhase("starting");
   const payload = {
-    objective: $("#objective").value.trim(),
+    objective: state.objective || (plan && plan.objective) || "",
     target: { url: state.project.target ? state.project.target.url : "" },
     run: {
       rounds: Number($("#opt-rounds").value || 3),
@@ -2123,9 +2373,18 @@ async function startAudit() {
       allow_network: !!(state.project.run && state.project.run.allow_network),
     },
   };
+  // An approved plan carries its scope/out-of-scope and the brief, so the audit
+  // runs exactly what was proposed.
+  if (plan) {
+    if (plan.scope && plan.scope.length) payload.target.scope = plan.scope.join(", ");
+    payload.brief = { ...(state.brief || {}), ...plan };
+  } else if (state.brief) {
+    payload.brief = state.brief;
+  }
   const res = await api("start_audit", payload);
   if (!res || !res.ok) {
     toast(res && res.error ? res.error : "could not start", true);
+    setRunning(false);
     return;
   }
   setRunning(true);
@@ -2169,6 +2428,44 @@ async function sendChat() {
   await pollChat();
 }
 
+/* The copilot proposes a plan and waits. We render it as a card with an
+   explicit Approve button; only that starts the audit. */
+function renderChatPlan(plan) {
+  const stream = $("#chat-stream");
+  const empty = $("#chat-empty");
+  if (empty) empty.remove();
+  finalize("assistant");
+  const card = document.createElement("div");
+  card.className = "chat-plan";
+  const scope = (plan.scope || []).join(", ") || "see engagement config";
+  const out = (plan.out_of_scope || []).join(", ");
+  const phases = (plan.phases || []).map((p) => `<li>${escapeHtml(p)}</li>`).join("");
+  card.innerHTML = `
+    <div class="cp-head">
+      <span class="cp-badge">Proposed engagement</span>
+      <span class="cp-title">${escapeHtml(plan.objective || "Engagement")}</span>
+    </div>
+    <div class="cp-row"><span>In scope</span><code>${escapeHtml(scope)}</code></div>
+    ${out ? `<div class="cp-row"><span>Out of scope</span><code>${escapeHtml(out)}</code></div>` : ""}
+    ${phases ? `<div class="cp-phases"><div class="cp-sub">Phases</div><ol>${phases}</ol></div>` : ""}
+    <div class="cp-foot">
+      <span class="cp-note">Nothing is tested until you approve.</span>
+      <button class="btn primary" id="cp-approve">Approve &amp; start</button>
+    </div>`;
+  stream.appendChild(card);
+  stream.scrollTop = stream.scrollHeight;
+  const approve = $("#cp-approve", card);
+  if (approve) {
+    approve.addEventListener("click", () => {
+      approve.disabled = true;
+      approve.textContent = "Starting…";
+      if (plan.objective) setObjective(plan.objective);
+      startAudit(plan);
+      setMode("audit");
+    });
+  }
+}
+
 function appendUserMessage(message) {
   const stream = $("#chat-stream");
   const wrap = document.createElement("div");
@@ -2184,14 +2481,23 @@ function appendUserMessage(message) {
 }
 
 /* The chat runs on a background thread and pushes events through the bridge.
-   Between pushes we poll so the UI stays live even if an event is dropped. */
+   Between pushes we poll so the UI stays live even if an event is dropped.
+
+   The bridge push and this poll would otherwise deliver the same event twice,
+   which duplicated replies and scrambled the timeline. We track an index and
+   only apply events we have not seen, advancing past everything the bridge
+   already pushed. */
 async function pollChat() {
+  let seen = 0;
   for (let i = 0; i < 2400; i += 1) {
     await new Promise((r) => setTimeout(r, 120));
     if (!state.chatting) break;
-    const res = await api("chat_state");
-    if (res && res.ok && res.pending && res.events && res.events.length) {
-      window.SplitAgent.emit(res.events);
+    const res = await api("chat_state", seen);
+    if (res && res.ok && Array.isArray(res.events)) {
+      if (res.events.length) {
+        window.SplitAgent.emit(res.events);
+        seen = typeof res.next === "number" ? res.next : seen + res.events.length;
+      }
     }
     if (res && res.ok && !res.running && !res.pending) {
       setChatting(false);
@@ -2452,6 +2758,39 @@ function wire() {
     })
   );
 
+  // "Open planner chat" from the brief step: stash the current brief, close the
+  // wizard and open the right-hand planner chat panel.
+  $("#wiz-open-planner").addEventListener("click", () => {
+    state.brief = collectBrief();
+    closeModals();
+    openPlanChat();
+    planChatSystem(
+      "Planner chat ready. Tell me anything about the environment or the scope, and I'll fold it into the plan. I only plan — I never test."
+    );
+  });
+
+  // scope document upload
+  $("#wiz-scope-upload").addEventListener("click", async () => {
+    const res = await api("pick_scope_document");
+    if (res && res.ok) {
+      setScopeDoc(res.name, res.content);
+      if (res.truncated) toast("Document truncated to 20000 characters", true);
+      else toast(`Attached ${res.name}`);
+    } else if (res && res.error) {
+      toast(res.error, true);
+    }
+  });
+  $("#wiz-scope-clear").addEventListener("click", () => setScopeDoc("", ""));
+
+  // planner chat panel (right side)
+  $("#plan-chat-send").addEventListener("click", sendPlanChat);
+  $("#plan-chat-input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      sendPlanChat();
+    }
+  });
+
   // settings
   $$("#settings-tabs .stab").forEach((tab) =>
     tab.addEventListener("click", () => {
@@ -2570,15 +2909,10 @@ function wire() {
     })
   );
 
-  // audit composer
-  const objective = $("#objective");
-  objective.addEventListener("input", () => autoGrow(objective));
-  objective.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-      e.preventDefault();
-      startAudit();
-    }
-  });
+  // audit bar: objective is set from the plan; clicking it opens the planner.
+  setObjective(state.objective);
+  $("#btn-objective").addEventListener("click", () => openPlanChat());
+  $("#btn-plan-chat").addEventListener("click", () => openPlanChat());
 
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") { closeModals(); closeModelPicker(); }
@@ -2701,7 +3035,9 @@ function playIntro() {
     document.body.classList.add("ready");
     setTimeout(() => intro.remove(), 700);
   };
-  setTimeout(finish, 0.9 + script.length * 0.4 + 0.7);
+  // setTimeout takes milliseconds; the stagger above is in seconds.
+  const totalMs = (0.9 + script.length * 0.4 + 0.7) * 1000;
+  setTimeout(finish, totalMs);
   intro.addEventListener("click", finish);
 }
 

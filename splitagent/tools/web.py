@@ -68,6 +68,10 @@ DEFAULT_PATHS = [
 ]
 
 
+_REDIRECT_CODES = {301, 302, 303, 307, 308}
+_MAX_REDIRECTS = 5
+
+
 async def _request(
     ctx: ToolContext,
     url: str,
@@ -82,7 +86,10 @@ async def _request(
     started = time.perf_counter()
     merged_headers = ctx.auth_headers()
     merged_headers.update(headers or {})
-    client = await get_client(follow=follow, verify=False, timeout=15.0, headers=merged_headers)
+    # Never let httpx follow redirects on its own: a single in-scope URL can
+    # 302 to an out-of-scope host. We follow manually and re-check the scope of
+    # every hop.
+    client = await get_client(follow=False, verify=False, timeout=15.0, headers=merged_headers)
     # The client already carries merged_headers as defaults; sending them again
     # would duplicate every header.
     response = await client.request(
@@ -92,6 +99,19 @@ async def _request(
         params=params,
         data=data,
     )
+    if follow:
+        hops = 0
+        while response.status_code in _REDIRECT_CODES and hops < _MAX_REDIRECTS:
+            location = response.headers.get("location")
+            if not location:
+                break
+            next_url = urljoin(str(response.url), location)
+            ctx.check_scope(next_url)  # raises ScopeError for an off-scope hop
+            hops += 1
+            response = await client.get(
+                next_url,
+                headers=request_headers(client, headers),
+            )
     elapsed = round((time.perf_counter() - started) * 1000, 1)
     body = response.text[:max_body]
     return {
@@ -210,12 +230,18 @@ async def crawl(
     action_re = re.compile(r"""action=["']([^"']*)["']""", re.IGNORECASE)
     input_re = re.compile(r"""name=["']([^"']+)["']""", re.IGNORECASE)
 
-    client = await get_client(follow=True, verify=False, timeout=10.0, headers=ctx.auth_headers())
+    # follow=False: each URL is scope-checked below, and redirects must not be
+    # followed silently to a host outside the scope.
+    client = await get_client(follow=False, verify=False, timeout=10.0, headers=ctx.auth_headers())
     while queue and len(pages) < max_pages:
         current = queue.pop(0)
         if current in seen:
             continue
         seen.add(current)
+        try:
+            ctx.check_scope(current)
+        except Exception:
+            continue
         try:
             response = await client.get(current)
         except httpx.HTTPError:

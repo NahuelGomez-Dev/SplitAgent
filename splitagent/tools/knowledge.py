@@ -126,6 +126,43 @@ def _read_context(ctx: ToolContext) -> dict[str, Any]:
     }
 
 
+async def _propose_engagement(
+    ctx: ToolContext,
+    objective: str,
+    scope: list[str] | None = None,
+    phases: list[str] | None = None,
+    out_of_scope: list[str] | None = None,
+) -> dict[str, Any]:
+    """Record a proposed engagement plan and surface it for operator approval.
+
+    The copilot calls this once it understands the engagement. Nothing is
+    scanned until the operator approves the plan in the UI.
+    """
+    plan = {
+        "objective": objective,
+        "scope": list(scope or []),
+        "phases": list(phases or []),
+        "out_of_scope": list(out_of_scope or []),
+    }
+    ctx.context.state.notes.append("PROPOSED ENGAGEMENT: " + objective)
+    from splitagent.core.bus import Event
+
+    await ctx.context.bus.emit(
+        Event(
+            type="chat.plan",
+            agent="assistant",
+            data={"plan": plan, "awaiting_approval": True},
+        )
+    )
+    return {
+        "proposed": True,
+        "plan": plan,
+        "next": (
+            "Plan proposed. Stop and ask the operator to confirm before running any scan or probe."
+        ),
+    }
+
+
 def knowledge_tools(ctx: ToolContext) -> list[Tool]:
     return [
         Tool(
@@ -298,6 +335,42 @@ def knowledge_tools(ctx: ToolContext) -> list[Tool]:
             ),
             parameters={"type": "object", "properties": {}},
             func=lambda: _read_context(ctx),
+            scope="shared",
+        ),
+        Tool(
+            name="propose_engagement",
+            description=(
+                "Propose an engagement plan for the operator to approve. Call "
+                "this once you understand the objective, scope and constraints, "
+                "BEFORE running any scan or probe. It shows the operator a plan "
+                "with an Approve button; nothing is tested until they approve."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "objective": {
+                        "type": "string",
+                        "description": "What the engagement should achieve.",
+                    },
+                    "scope": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Hosts/URLs that are in scope.",
+                    },
+                    "out_of_scope": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Hosts/URLs that must never be touched.",
+                    },
+                    "phases": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Ordered list of work phases.",
+                    },
+                },
+                "required": ["objective"],
+            },
+            func=lambda **kwargs: _propose_engagement(ctx, **kwargs),
             scope="shared",
         ),
     ]

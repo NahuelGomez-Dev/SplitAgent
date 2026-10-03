@@ -216,7 +216,7 @@ def test_chat_pipeline(llm_servers, tmp_path, monkeypatch):
     app.project.run.max_steps = 3
 
     collected: list[dict] = []
-    app._emit = lambda batch: collected.extend(batch)  # type: ignore[assignment]
+    app._emit_chat = lambda batch: collected.extend(batch)  # type: ignore[assignment]
 
     app._chat_entry("How should I test this target?")
 
@@ -228,6 +228,135 @@ def test_chat_pipeline(llm_servers, tmp_path, monkeypatch):
 
     app.api.chat_reset()
     assert app._chat_history == []
+
+
+def _configured_app(tmp_path, monkeypatch, llm_url):
+    app = _app(tmp_path, monkeypatch)
+    app.global_config.llm.provider = "custom"
+    app.global_config.llm.base_url = llm_url
+    app.global_config.llm.api_key = "test-key"
+    app.global_config.llm.model = "mock-model"
+    app.global_config.llm.stream = True
+    return app
+
+
+def test_build_audit_plan_uses_the_model(llm_servers, tmp_path, monkeypatch):
+    _target_url, llm_url = llm_servers
+    app = _configured_app(tmp_path, monkeypatch, llm_url)
+    plan = app.build_audit_plan(
+        {
+            "objective": "Audit the login",
+            "scope": ["localhost"],
+            "out_of_scope": ["admin.localhost"],
+            "noise": "stealth",
+        }
+    )
+    assert plan["source"] == "ai"
+    assert plan["awaiting_approval"] is True
+    assert plan["objective"]
+    assert "admin.localhost" not in plan["scope"]
+
+
+def test_build_audit_plan_sanitises_scope(llm_servers, tmp_path, monkeypatch):
+    """A host the model puts in scope but the brief excludes must be dropped."""
+    _target_url, llm_url = llm_servers
+    app = _configured_app(tmp_path, monkeypatch, llm_url)
+    plan = app.build_audit_plan({"scope": ["localhost"], "out_of_scope": ["localhost"]})
+    assert plan["scope"] == []
+
+
+def test_fallback_plan_without_a_model(tmp_path, monkeypatch):
+    app = _app(tmp_path, monkeypatch)  # no model configured
+    plan = app.build_audit_plan({"objective": "Audit x", "scope": ["a.com"], "kind": "api"})
+    assert plan["source"] == "fallback"
+    assert plan["phases"]
+    assert plan["awaiting_approval"] is True
+
+
+def test_brief_chat_answers_without_starting_an_audit(llm_servers, tmp_path, monkeypatch):
+    _target_url, llm_url = llm_servers
+    app = _configured_app(tmp_path, monkeypatch, llm_url)
+    res = app.brief_chat({"message": "it is a healthcare app", "brief": {}})
+    assert res["ok"] is True
+    assert res["text"]
+    assert app.is_running() is False  # the planner never starts an audit
+
+
+def test_planner_chat_prompt_is_conversational_not_json(tmp_path):
+    from splitagent.agents.prompts import PLANNER_CHAT_SYSTEM
+
+    # The chat must not demand a JSON answer; the plan prompt does.
+    assert "never answer with JSON" in PLANNER_CHAT_SYSTEM
+    assert "Return **only** a JSON" not in PLANNER_CHAT_SYSTEM
+
+
+def test_build_project_maps_brief_to_instructions(tmp_path, monkeypatch):
+    app = _app(tmp_path, monkeypatch)
+    project = app._build_project(
+        {
+            "brief": {
+                "objective": "Audit auth",
+                "crown_jewels": "SSO login",
+                "noise": "stealth",
+                "notes": "staging only",
+            }
+        }
+    )
+    assert "ENGAGEMENT BRIEF" in project.workspace.instructions
+    assert "SSO login" in project.workspace.instructions
+    assert project.run.tool_concurrency == 1  # stealth
+
+
+def test_save_project_persists_hosts_and_tuning(tmp_path, monkeypatch):
+    app = _app(tmp_path, monkeypatch)
+    res = app.api.save_project(
+        {
+            "target": {"hosts": ["10.0.0.5"]},
+            "run": {"tool_concurrency": 6, "max_duration_minutes": 30},
+            "workspace": {"instruction_files": ["scope.md"]},
+        }
+    )
+    assert res["ok"] is True
+    assert app.project.target.hosts == ["10.0.0.5"]
+    assert app.project.run.tool_concurrency == 6
+    assert app.project.run.max_duration_minutes == 30
+    assert app.project.workspace.instruction_files == ["scope.md"]
+
+
+def test_pick_scope_document_reads_text(tmp_path, monkeypatch):
+    app = _app(tmp_path, monkeypatch)
+    doc = tmp_path / "scope.md"
+    doc.write_text("In scope: app.example.com\nOut: admin.example.com", encoding="utf-8")
+
+    class FakeWindow:
+        def create_file_dialog(self, *a, **k):
+            return [str(doc)]
+
+    app.window = FakeWindow()
+    res = app.api.pick_scope_document()
+    assert res["ok"] is True
+    assert res["name"] == "scope.md"
+    assert "app.example.com" in res["content"]
+
+
+def test_pick_scope_document_cancelled(tmp_path, monkeypatch):
+    app = _app(tmp_path, monkeypatch)
+
+    class FakeWindow:
+        def create_file_dialog(self, *a, **k):
+            return None
+
+    app.window = FakeWindow()
+    assert app.api.pick_scope_document()["ok"] is False
+
+
+def test_scope_document_reaches_the_instructions(tmp_path, monkeypatch):
+    app = _app(tmp_path, monkeypatch)
+    project = app._build_project(
+        {"brief": {"scope_document": "In scope: app.example.com", "noise": "normal"}}
+    )
+    assert "Operator scope document:" in project.workspace.instructions
+    assert "app.example.com" in project.workspace.instructions
 
 
 def test_save_project_with_auth(tmp_path, monkeypatch):

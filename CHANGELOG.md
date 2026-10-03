@@ -3,6 +3,105 @@
 All notable changes to SplitAgent are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.0.3] - 2026-10-03
+
+An audit that plans before it runs, a full security-hardening pass, and a
+cleaner audit workspace. The engagement is now scoped by a rich brief, planned
+by the model for the specific environment, and only starts once you approve it.
+
+### Added
+
+**Engagement planner (audit brief)**
+
+- The `New audit` wizard gained a sixth, optional **Brief** step: what matters
+  most (crown jewels), engagement goal, noise profile (stealth / normal /
+  aggressive), areas to exclude, window and rate constraints, an authorization
+  reference and free notes.
+- The plan is **written by the model** (`build_audit_plan`) so it adapts to each
+  environment — phases, techniques and cautions tailored to the brief and the
+  uploaded scope document. A deterministic **fallback plan** is used if the
+  model fails or exceeds the 15-second timeout, so an audit always has a plan.
+- Plans are shown as an **Approve & start** card. Nothing is tested until the
+  operator approves; the approved scope and brief flow into the run.
+- **Upload your own scope document** (`.md`, `.txt`, `.json`, `.yaml`, `.csv`).
+  The planner treats it as the highest-priority source of truth for scope and
+  rules of engagement.
+- A **Plan chat** panel on the right lets the operator talk to the planner about
+  the plan. It is conversational and tool-less: it only plans, never tests.
+- The brief is persisted to `workspace.instructions`, so it actually reaches the
+  Red and Blue agents (previously the objective was only stored as a name).
+
+**Copilot**
+
+- The copilot is now a **normal, conversational assistant first**: it talks
+  about the objective and scope and calls `propose_engagement` to show a plan,
+  then waits for approval before starting any testing.
+
+**Desktop experience**
+
+- **Resizable, collapsible panels**: drag the dividers between the sidebar,
+  stream and review panel, or hide either side with the titlebar buttons /
+  `Ctrl+B` (sidebar) and `Ctrl+J` (panel).
+- **Boot intro animation** (canvas particles, drawn mark, boot log) with
+  click-to-skip and `prefers-reduced-motion` support.
+- A single **Thinking / Exploring** activity line pinned to the bottom of the
+  stream, and a Grok-style **response timer** under the active message.
+- The audit view is action-focused: the central stream shows only the agents'
+  work; the free-text objective was replaced by an **Objective** indicator fed
+  from the plan, and planning/questions live in the right-hand Plan chat.
+
+**Security hardening**
+
+- `out_of_scope` is now enforced (subtracted from the allowed hosts and always
+  wins, even with `allow_network`).
+- `run_tool` / `install_tool` obey the scope: hosts, URLs and git remotes taken
+  from a command line are validated before execution.
+- The isolated toolbox no longer interpolates model-supplied package names into
+  `sh -lc`; they are passed as arguments with strict validation per manager.
+- Report filenames are sanitised, so a crafted session name cannot escape the
+  output directory.
+- Auth secrets (password, token, cookies, headers) are **redacted** in every
+  payload sent to the renderer.
+- Session ids are validated against path traversal.
+
+### Fixed
+
+- **Copilot replies were duplicated** — chat events were delivered both over the
+  live bridge and the polled buffer. Chat now has a single, polled channel.
+- The planner chat returned raw JSON instead of prose (it reused the JSON-only
+  plan prompt). It now has its own conversational prompt.
+- The **Plan chat** button now un-collapses the review panel, so it always opens
+  the chat even if the panel had been hidden.
+- Resizable dividers no longer shifted the three-column layout, and keep working
+  below 1280 px.
+- Tool output is visible again (a global `.hidden !important` rule defeated the
+  detail override), and the trace panel no longer freezes at 400 entries.
+- The **swarm of state bugs** from the audit: first-run onboarding crash, boot
+  intro showing for ~3 ms, Ctrl+Enter starting the audit twice, tool output
+  invisible, workspace settings silently dropped by the wizard, and a leaked
+  running-tool counter when `call_id` was missing.
+- Continuous conversations no longer duplicate the injected "current state"
+  block in the model history (`_clean_history`).
+- The chat textarea rendered as an unstyled white box.
+- Sandbox `port_map` direction was inverted (dvwa/bwapp/webgoat mapped to the
+  wrong ports); it is now consistently `{host: container}`.
+- HTTP redirects can no longer hop to an out-of-scope host (followed and
+  re-checked manually).
+- Malformed session files degrade instead of crashing the report renderer.
+- Provider toggles, `allow_network`/offline divergence and several smaller
+  backend issues.
+- Type checking: all mypy errors resolved.
+
+### CI / packaging
+
+- `mypy` now runs in CI alongside ruff and the secret scan.
+- `scripts/` is linted.
+
+### Notes
+
+- For **authorised security testing only**.
+- Full test suite: **422 passing**.
+
 ## [0.0.2] - 2026-10-02
 
 Redesign of the reporting engine and the desktop experience. Reports now follow

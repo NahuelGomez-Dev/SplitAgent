@@ -9,6 +9,7 @@ never touch disk in clear text.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -136,6 +137,8 @@ class SharedContext:
         cls, session_id: str, bus: EventBus | None = None, directory: Path | None = None
     ) -> SharedContext:
         directory = directory or sessions_dir()
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", session_id or ""):
+            raise ConfigError(f"Invalid session id: {session_id!r}")
         path = directory / f"{session_id}.session.enc"
         if not path.exists():
             raise ConfigError(f"Session '{session_id}' not found at {path}")

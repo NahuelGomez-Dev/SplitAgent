@@ -26,6 +26,15 @@ from splitagent.config import (
 from splitagent.core.sandbox import TARGET_PRESETS
 
 
+def _project_dict(project: Any) -> dict[str, Any]:
+    """The project as JSON, with auth secrets masked before they reach the UI."""
+    data = dataclasses.asdict(project)
+    auth = getattr(project, "auth", None)
+    if auth is not None and "auth" in data:
+        data["auth"] = auth.redacted()
+    return data
+
+
 class JsApi:
     """Exposed to the WebView as ``window.pywebview.api``."""
 
@@ -50,7 +59,7 @@ class JsApi:
             },
             "config_path": str(global_config_path()),
             "providers": PROVIDER_PRESETS,
-            "project": dataclasses.asdict(project),
+            "project": _project_dict(project),
             "project_path": str(project_config_path()),
             "target_presets": {
                 name: {"image": preset["image"], "url": preset["url"]}
@@ -237,6 +246,8 @@ class JsApi:
             project.target.scope = _as_list(target["scope"])
         if "out_of_scope" in target:
             project.target.out_of_scope = _as_list(target["out_of_scope"])
+        if "hosts" in target:
+            project.target.hosts = _as_list(target["hosts"])
         if run.get("rounds") is not None:
             try:
                 project.run.rounds = max(1, int(run["rounds"]))
@@ -251,6 +262,16 @@ class JsApi:
             project.run.safe_mode = bool(run["safe_mode"])
         if run.get("allow_network") is not None:
             project.run.allow_network = bool(run["allow_network"])
+        if run.get("tool_concurrency") is not None:
+            try:
+                project.run.tool_concurrency = max(1, int(run["tool_concurrency"]))
+            except (TypeError, ValueError):
+                pass
+        if run.get("max_duration_minutes") is not None:
+            try:
+                project.run.max_duration_minutes = max(0, int(run["max_duration_minutes"]))
+            except (TypeError, ValueError):
+                pass
         sandbox = run.get("sandbox") or {}
         if sandbox:
             if "enabled" in sandbox:
@@ -258,9 +279,13 @@ class JsApi:
             if sandbox.get("image"):
                 project.run.sandbox.image = str(sandbox["image"])
             if sandbox.get("port_map"):
-                project.run.sandbox.port_map = {
-                    str(k): int(v) for k, v in sandbox["port_map"].items()
-                }
+                port_map: dict[str, int] = {}
+                for key, value in sandbox["port_map"].items():
+                    try:
+                        port_map[str(key)] = int(value)
+                    except (TypeError, ValueError):
+                        continue  # ignore a non-numeric port instead of crashing
+                project.run.sandbox.port_map = port_map
         workspace = payload.get("workspace") or {}
         if workspace:
             if "path" in workspace:
@@ -277,6 +302,8 @@ class JsApi:
                     pass
             if "instructions" in workspace:
                 project.workspace.instructions = str(workspace.get("instructions") or "")
+            if "instruction_files" in workspace:
+                project.workspace.instruction_files = _as_list(workspace["instruction_files"])
         auth = payload.get("auth") or {}
         if auth:
             if "username" in auth:
@@ -296,7 +323,7 @@ class JsApi:
         if payload.get("path"):
             path = Path(str(payload["path"]))
         save_project_config(project, path)
-        return {"ok": True, "path": str(path), "project": dataclasses.asdict(project)}
+        return {"ok": True, "path": str(path), "project": _project_dict(project)}
 
     def load_project(self, path: str = "") -> dict[str, Any]:
         candidate = Path(path) if path else project_config_path()
@@ -304,7 +331,7 @@ class JsApi:
             return {"ok": False, "error": f"not found: {candidate}"}
         project = load_project_config(candidate)
         self._app.project = project
-        return {"ok": True, "path": str(candidate), "project": dataclasses.asdict(project)}
+        return {"ok": True, "path": str(candidate), "project": _project_dict(project)}
 
     def choose_project_file(self) -> dict[str, Any]:
         import webview
@@ -318,6 +345,41 @@ class JsApi:
             return {"ok": False}
         return self.load_project(str(result[0]))
 
+    def pick_scope_document(self) -> dict[str, Any]:
+        """Let the operator pick a scope/objectives document for the planner.
+
+        Reads text formats only (md, txt, json, yaml, csv). The content is
+        returned to the UI, which stores it in the brief; it never executes.
+        """
+        import webview
+
+        if self._app.window is None:
+            return {"ok": False, "error": "window not ready"}
+        result = self._app.window.create_file_dialog(
+            webview.FileDialog.OPEN,
+            allow_multiple=False,
+            file_types=(
+                "Documents (*.md;*.txt;*.json;*.yaml;*.yml;*.csv)",
+                "All files (*.*)",
+            ),
+        )
+        if not result:
+            return {"ok": False}
+        path = Path(str(result[0]))
+        if not path.is_file():
+            return {"ok": False, "error": "not a file"}
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            return {"ok": False, "error": f"could not read: {exc}"}
+        return {
+            "ok": True,
+            "name": path.name,
+            "path": str(path),
+            "content": content[:20000],
+            "truncated": len(content) > 20000,
+        }
+
     def apply_target_preset(self, name: str) -> dict[str, Any]:
         preset = TARGET_PRESETS.get(name)
         if not preset:
@@ -327,7 +389,7 @@ class JsApi:
         project.target.ports = [int(p) for p in preset["port_map"]]
         project.run.sandbox.image = preset["image"]
         project.run.sandbox.port_map = preset["port_map"]
-        return {"ok": True, "project": dataclasses.asdict(project)}
+        return {"ok": True, "project": _project_dict(project)}
 
     # -- audit ------------------------------------------------------------- #
     def start_audit(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -348,6 +410,13 @@ class JsApi:
 
     def chat_state(self, since: int = 0) -> dict[str, Any]:
         return self._app.chat_state(since)
+
+    # -- engagement planner ------------------------------------------------- #
+    def build_audit_plan(self, brief: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self._app.build_audit_plan(brief or {})
+
+    def brief_chat(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self._app.brief_chat(payload or {})
 
     def list_models(self) -> dict[str, Any]:
         return self._app.list_models()

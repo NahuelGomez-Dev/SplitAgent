@@ -671,6 +671,23 @@ def test_registry_shared_tools_reach_both(tmp_path):
         names = build_registry(ctx, agent).names()
         assert "record_finding" in names
         assert "todowrite" in names
+        assert "propose_engagement" in names
+
+
+async def test_propose_engagement_emits_a_plan(tmp_path):
+    from splitagent.tools.knowledge import _propose_engagement
+
+    ctx = _ctx("http://127.0.0.1", tmp_path)
+    seen: list[tuple[str, dict]] = []
+    ctx.context.bus.subscribe(lambda e: seen.append((e.type, e.data)))
+    result = await _propose_engagement(
+        ctx,
+        objective="Audit the login flow",
+        scope=["127.0.0.1"],
+        phases=["recon", "auth testing"],
+    )
+    assert result["proposed"] is True
+    assert any(t == "chat.plan" and d["awaiting_approval"] for t, d in seen)
 
 
 def test_workspace_tools_round_trip(tmp_path):

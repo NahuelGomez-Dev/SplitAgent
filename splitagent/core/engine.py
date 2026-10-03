@@ -46,15 +46,11 @@ class Engine:
 
     # -- helpers ----------------------------------------------------------- #
     def _require_llm(self) -> None:
+        from splitagent.config import KEYLESS_PROVIDERS
+
         if (
             not self.global_config.llm.resolved_api_key()
-            and self.global_config.llm.provider
-            not in (
-                "ollama",
-                "lmstudio",
-                "vllm",
-                "custom",
-            )
+            and self.global_config.llm.provider not in KEYLESS_PROVIDERS
         ):
             raise ConfigError(
                 "No API key configured. Run `splitagent config setup` to choose a "
@@ -150,6 +146,9 @@ class Engine:
         self._sandbox_status = status
         if status.running and status.url and not self.project.target.url:
             self.project.target.url = status.url
+            # The context was built before the sandbox existed; keep the target
+            # the session records in sync with the URL we actually test.
+            self.context.state.target = status.url
         await self.bus.emit(
             Event(
                 type="log",

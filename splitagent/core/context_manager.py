@@ -232,7 +232,7 @@ def prune(messages: list[ChatMessage], policy: ContextPolicy) -> PruneResult:
         cleared.append((message, message.content, size))
         pruned += size
     protected_tokens = sum(item[1] for item in protected)
-    if pruned <= PRUNE_MINIMUM:
+    if pruned < PRUNE_MINIMUM:
         # Not worth mutating the transcript: leave every message untouched.
         return PruneResult(pruned=0, protected=protected_tokens, parts=0)
     for message, _, _ in cleared:

@@ -41,8 +41,24 @@ class MockLLMHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("content-length", 0))
         body = json.loads(self.rfile.read(length) or b"{}")
         messages = body.get("messages", [])
-        used_tool = any(m.get("role") == "tool" for m in messages)
-        if used_tool:
+        blob = json.dumps(messages)
+        # The engagement planner asks for a JSON plan; answer with one so the
+        # audit-plan pipeline is exercised end to end.
+        if "ENGAGEMENT PLANNER" in blob:
+            payload = _text_stream(
+                json.dumps(
+                    {
+                        "objective": "Audit the mock target",
+                        "scope": ["localhost"],
+                        "out_of_scope": [],
+                        "phases": ["recon", "validate"],
+                        "techniques": ["http_request"],
+                        "cautions": ["non-destructive only"],
+                        "noise": "normal",
+                    }
+                )
+            )
+        elif any(m.get("role") == "tool" for m in messages):
             payload = _text_stream("Analysis complete: no confirmed exploitable issues.")
         else:
             payload = _tool_stream("read_shared_context", "{}")

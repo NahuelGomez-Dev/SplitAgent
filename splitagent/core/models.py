@@ -70,8 +70,23 @@ class Finding:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Finding:
+        if not isinstance(data, dict):
+            return cls()
         known = set(cls.__dataclass_fields__)
-        return cls(**{k: v for k, v in data.items() if k in known})
+        filtered = {k: v for k, v in data.items() if k in known}
+        # Coerce the fields the report formats numerically; a corrupt session
+        # must degrade, not crash the renderer.
+        try:
+            filtered["cvss_score"] = float(filtered.get("cvss_score") or 0.0)
+        except (TypeError, ValueError):
+            filtered["cvss_score"] = 0.0
+        try:
+            filtered["round"] = int(filtered.get("round") or 0)
+        except (TypeError, ValueError):
+            filtered["round"] = 0
+        if not isinstance(filtered.get("references"), list):
+            filtered["references"] = []
+        return cls(**filtered)
 
 
 @dataclass
@@ -95,8 +110,15 @@ class Mitigation:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Mitigation:
+        if not isinstance(data, dict):
+            return cls()
         known = set(cls.__dataclass_fields__)
-        return cls(**{k: v for k, v in data.items() if k in known})
+        filtered = {k: v for k, v in data.items() if k in known}
+        try:
+            filtered["round"] = int(filtered.get("round") or 0)
+        except (TypeError, ValueError):
+            filtered["round"] = 0
+        return cls(**filtered)
 
 
 @dataclass
@@ -116,8 +138,19 @@ class Round:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Round:
+        if not isinstance(data, dict):
+            return cls()
         known = set(cls.__dataclass_fields__)
-        return cls(**{k: v for k, v in data.items() if k in known})
+        filtered = {k: v for k, v in data.items() if k in known}
+        try:
+            filtered["index"] = int(filtered.get("index") or 1)
+        except (TypeError, ValueError):
+            filtered["index"] = 1
+        if not isinstance(filtered.get("finding_ids"), list):
+            filtered["finding_ids"] = []
+        if not isinstance(filtered.get("mitigation_ids"), list):
+            filtered["mitigation_ids"] = []
+        return cls(**filtered)
 
 
 @dataclass
@@ -262,9 +295,13 @@ class SessionState:
             provider=data.get("provider", ""),
             started_at=data.get("started_at", _now()),
             ended_at=data.get("ended_at", ""),
-            rounds=[Round.from_dict(r) for r in data.get("rounds", [])],
-            findings=[Finding.from_dict(f) for f in data.get("findings", [])],
-            mitigations=[Mitigation.from_dict(m) for m in data.get("mitigations", [])],
+            rounds=[Round.from_dict(r) for r in data.get("rounds", []) if isinstance(r, dict)],
+            findings=[
+                Finding.from_dict(f) for f in data.get("findings", []) if isinstance(f, dict)
+            ],
+            mitigations=[
+                Mitigation.from_dict(m) for m in data.get("mitigations", []) if isinstance(m, dict)
+            ],
             notes=list(data.get("notes", [])),
             usage=dict(data.get("usage", {})),
             checkpoints=list(data.get("checkpoints", [])),

@@ -356,8 +356,9 @@ class BaseAgent:
                         self._trace("usage", **event.usage)
                         await self._emit("usage", **event.usage)
                     elif event.type == "retry":
-                        self._trace("retry", **event.data)
-                        await self._emit("agent.retry", **(event.data or {}))
+                        retry_data = event.data or {}
+                        self._trace("retry", **retry_data)
+                        await self._emit("agent.retry", **retry_data)
                     elif event.type == "error":
                         await self._emit("error", text=event.error or "LLM error")
                         raise LLMError(event.error or "LLM error")

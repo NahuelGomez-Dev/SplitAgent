@@ -27,6 +27,21 @@ def test_redacted_hides_key():
     assert config.llm.redacted()["api_key"] == "***"
 
 
+def test_configured_allows_a_keyless_local_provider():
+    # Ollama/LM Studio/vLLM/custom run without an API key.
+    config = GlobalConfig(
+        llm=LLMSettings(provider="ollama", base_url="http://localhost:11434/v1", model="llama3")
+    )
+    assert config.configured is True
+
+
+def test_configured_still_requires_a_key_for_hosted_providers():
+    config = GlobalConfig(
+        llm=LLMSettings(provider="openai", base_url="https://api.openai.com/v1", model="gpt-4o")
+    )
+    assert config.configured is False
+
+
 def test_apply_preset():
     llm = LLMSettings()
     apply_provider_preset(llm, "deepseek")

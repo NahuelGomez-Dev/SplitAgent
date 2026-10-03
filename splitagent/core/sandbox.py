@@ -18,6 +18,8 @@ from splitagent.core import proc
 from splitagent.errors import SandboxError
 
 # Ready-to-use intentionally vulnerable targets for demos / training.
+# ``port_map`` is {host_port: container_port}: the publish argument is
+# ``-p host:container`` and the URL is derived from the host port.
 TARGET_PRESETS: dict[str, dict[str, Any]] = {
     "juice-shop": {
         "image": "bkimminich/juice-shop:latest",
@@ -26,17 +28,17 @@ TARGET_PRESETS: dict[str, dict[str, Any]] = {
     },
     "dvwa": {
         "image": "vulnerables/web-dvwa:latest",
-        "port_map": {"80": 8080},
+        "port_map": {"8080": 80},
         "url": "http://localhost:8080",
     },
     "bwapp": {
         "image": "raesene/bwapp:latest",
-        "port_map": {"80": 8081},
+        "port_map": {"8081": 80},
         "url": "http://localhost:8081",
     },
     "webgoat": {
         "image": "webgoat/webgoat:latest",
-        "port_map": {"8080": 8082},
+        "port_map": {"8082": 8080},
         "url": "http://localhost:8082/WebGoat",
     },
 }

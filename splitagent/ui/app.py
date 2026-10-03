@@ -30,6 +30,7 @@ from splitagent.config import (
     save_global_config,
 )
 from splitagent.core.bus import Event, EventBus
+from splitagent.core.context import SharedContext
 from splitagent.core.engine import Engine
 from splitagent.report.generator import build_markdown
 from splitagent.ui import theme as t
@@ -186,7 +187,7 @@ class SplitAgentApp(App[None]):
         self.phase = "idle"
         self.resilience = 0.0
         self.running = False
-        self._session = None
+        self._session: SharedContext | None = None
 
     # -- layout ------------------------------------------------------------ #
     def compose(self) -> ComposeResult:
@@ -240,13 +241,13 @@ class SplitAgentApp(App[None]):
 
     def action_run_audit(self) -> None:
         if self.running:
-            self._log("A run is already in progress.")
+            self._log_line("A run is already in progress.")
             return
         if not self.global_config.configured:
             self._prompt_config(first_run=True)
             return
         self.running = True
-        self._log("Starting audit...")
+        self._log_line("Starting audit...")
         self._run_engine()
 
     def action_configure(self) -> None:
@@ -258,7 +259,7 @@ class SplitAgentApp(App[None]):
                 return
             self.global_config = result
             path = save_global_config(result)
-            self._log(f"Configuration saved to {path}")
+            self._log_line(f"Configuration saved to {path}")
             self._refresh_topbar()
 
         self.push_screen(ConfigScreen(self.global_config), _apply)
@@ -266,13 +267,13 @@ class SplitAgentApp(App[None]):
     def action_save_session(self) -> None:
         if self._session is not None:
             path = self._session.save()
-            self._log(f"Session saved to {path}")
+            self._log_line(f"Session saved to {path}")
         else:
-            self._log("Nothing to save yet.")
+            self._log_line("Nothing to save yet.")
 
     def action_export(self) -> None:
         if self._session is None:
-            self._log("Run an audit first.")
+            self._log_line("Run an audit first.")
             return
         from pathlib import Path
 
@@ -282,7 +283,7 @@ class SplitAgentApp(App[None]):
             self._session.state, self.project.report, Path(self.project.report.output_dir)
         )
         for path in paths:
-            self._log(f"Report written: {path}")
+            self._log_line(f"Report written: {path}")
 
     # -- engine worker ----------------------------------------------------- #
     @work(exclusive=True)
@@ -290,11 +291,11 @@ class SplitAgentApp(App[None]):
         try:
             self.engine = Engine(self.global_config, self.project, bus=self.bus)
             self._session = await self.engine.run()
-            self._log("Audit complete.")
+            self._log_line("Audit complete.")
             markdown = build_markdown(self._session.state, self.project.report)
             self.query_one("#report-view", Markdown).update(markdown)
         except Exception as exc:
-            self._log(f"Run failed: {type(exc).__name__}: {exc}")
+            self._log_line(f"Run failed: {type(exc).__name__}: {exc}")
         finally:
             self.running = False
             self.phase = "done"
@@ -330,9 +331,9 @@ class SplitAgentApp(App[None]):
         elif etype == "round.end":
             self.resilience = float(event.data.get("resilience", self.resilience))
         elif etype == "log":
-            self._log(event.data.get("text", ""))
+            self._log_line(event.data.get("text", ""))
         elif etype == "error":
-            self._log(f"error: {event.data.get('text', '')}")
+            self._log_line(f"error: {event.data.get('text', '')}")
         elif etype == "session.end":
             self.phase = "done"
             self.resilience = float(event.data.get("resilience", self.resilience))
@@ -352,7 +353,7 @@ class SplitAgentApp(App[None]):
         except Exception:  # pragma: no cover - widget not mounted yet
             pass
 
-    def _log(self, message: str) -> None:
+    def _log_line(self, message: str) -> None:
         self.logs.append(message)
         try:
             self.query_one("#activity-log", Static).update("\n".join(self.logs[-300:]))

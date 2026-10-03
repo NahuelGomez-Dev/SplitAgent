@@ -242,12 +242,12 @@ class LLMClient:
             body["stream_options"] = {"include_usage": True}
 
         if not self.settings.stream:
-            message, usage = await self._openai_nonstream(body)
+            message, nonstream_usage = await self._openai_nonstream(body)
             if message.content:
                 yield LLMEvent(type="text", text=message.content)
             for call in message.tool_calls:
                 yield LLMEvent(type="tool_call", tool_call=call)
-            yield LLMEvent(type="usage", usage=usage)
+            yield LLMEvent(type="usage", usage=nonstream_usage)
             yield LLMEvent(type="done")
             return
 

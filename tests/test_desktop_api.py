@@ -199,6 +199,26 @@ def test_set_experience_was_removed(api):
     assert not hasattr(api, "set_experience")
 
 
+def test_auth_secrets_are_redacted_in_the_bridge(app, api):
+    app.project.auth.username = "admin"
+    app.project.auth.password = "hunter2"
+    app.project.auth.token = "secret-token"
+    app.project.auth.cookies = "session=abc"
+    app.project.auth.headers = {"X-API-Key": "k"}
+
+    boot = api.bootstrap()
+    auth = boot["project"]["auth"]
+    assert auth["password"] == "***"
+    assert auth["token"] == "***"
+    assert auth["cookies"] == "***"
+    assert auth["headers"] == {"X-API-Key": "***"}
+    assert auth["username"] == "admin"  # not a secret
+    assert auth["has_password"] is True
+
+    saved = api.save_project({"name": "x"})
+    assert saved["project"]["auth"]["password"] == "***"
+
+
 def test_set_ui_preference_toggles_thinking(app, api):
     api.set_ui_preference({"show_thinking": False})
     assert app.global_config.ui.show_thinking is False
@@ -424,12 +444,14 @@ def test_chat_state_replays_events_since_an_index(app, api):
     assert [e["type"] for e in tail["events"]] == ["agent.text"]
 
 
-def test_emit_buffers_events_for_polling(app):
-    # With no window attached, pushed events must still be recoverable.
+def test_emit_chat_buffers_events_for_polling(app):
+    # Chat is delivered only through the polled buffer, never the live bridge,
+    # so an event can't be shown twice.
     app.window = None
     app._chat_events = []
-    app._emit([{"type": "x", "data": {}}])
+    app._emit_chat([{"type": "x", "data": {}}])
     assert app._chat_events == [{"type": "x", "data": {}}]
+    assert app._chat_events == app.api.chat_state(0)["events"]
 
 
 # --------------------------------------------------------------------------- #

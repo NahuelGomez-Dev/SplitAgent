@@ -39,7 +39,8 @@ class ToolContext:
     def allowed_hosts(self) -> set[str]:
         hosts = set(self.target.effective_hosts())
         hosts.update(self.target.scope or [])
-        return {h.lower() for h in hosts if h}
+        excluded = {h.lower() for h in (self.target.out_of_scope or []) if h}
+        return {h.lower() for h in hosts if h and h.lower() not in excluded}
 
     def check_scope(self, host_or_url: str) -> None:
         """Refuse targets outside the authorised scope when enforcement is on."""
@@ -50,6 +51,9 @@ class ToolContext:
         host = host.split(":")[0].lower()
         if not host:
             return
+        # An explicit exclusion always wins, even in allow_network mode.
+        if host in {h.lower() for h in (self.target.out_of_scope or []) if h}:
+            raise ScopeError(f"'{host}' is explicitly out of scope (target.out_of_scope).")
         if self.run.allow_network:
             return
         allowed = self.allowed_hosts()
@@ -118,7 +122,7 @@ def _pack(result: Any) -> str:
 
 
 def _serialise(value: Any) -> Any:
-    if dataclasses.is_dataclass(value):
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
         return dataclasses.asdict(value)
     if isinstance(value, dict):
         return {k: _serialise(v) for k, v in value.items()}

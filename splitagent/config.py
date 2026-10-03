@@ -149,6 +149,9 @@ PROVIDER_PRESETS: dict[str, dict[str, str]] = {
     },
 }
 
+# Local / self-hosted providers that legitimately run without an API key.
+KEYLESS_PROVIDERS = frozenset({"ollama", "lmstudio", "vllm", "custom"})
+
 API_KEY_ENV = {
     "openai": ("OPENAI_API_KEY",),
     "opencode-go": ("OPENCODE_API_KEY", "OPENCODE_GO_API_KEY"),
@@ -316,7 +319,8 @@ class GlobalConfig:
 
     @property
     def configured(self) -> bool:
-        return bool(self.llm.model and self.llm.base_url and self.llm.resolved_api_key())
+        has_key = bool(self.llm.resolved_api_key()) or self.llm.provider in KEYLESS_PROVIDERS
+        return bool(self.llm.model and self.llm.base_url and has_key)
 
 
 @dataclass
@@ -382,6 +386,18 @@ class AuthConfig:
         if self.headers:
             parts.append("custom headers: " + ", ".join(sorted(self.headers)))
         return ", ".join(parts) if parts else "(none)"
+
+    def redacted(self) -> dict[str, Any]:
+        """A copy safe to hand to the renderer: secrets are masked."""
+        data = asdict(self)
+        for key in ("password", "token", "cookies"):
+            if data.get(key):
+                data[key] = "***"
+        data["headers"] = dict.fromkeys(self.headers or {}, "***")
+        data["has_password"] = bool(self.password)
+        data["has_token"] = bool(self.token)
+        data["has_cookies"] = bool(self.cookies)
+        return data
 
 
 @dataclass
@@ -629,7 +645,8 @@ def save_global_config(cfg: GlobalConfig, path: Path | None = None) -> Path:
 def load_project_config(path: Path | None = None) -> ProjectConfig:
     path = path or project_config_path()
     data = _load_yaml(path)
-    project_block = data.get("project") if isinstance(data.get("project"), dict) else {}
+    raw_project = data.get("project")
+    project_block: dict[str, Any] = raw_project if isinstance(raw_project, dict) else {}
     kwargs: dict[str, Any] = {}
     if project_block.get("name"):
         kwargs["name"] = project_block["name"]

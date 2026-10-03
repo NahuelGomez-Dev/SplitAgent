@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ipaddress
+import re
 from typing import Any
 
 from splitagent.core.workspace import (
@@ -14,6 +16,51 @@ from splitagent.core.workspace import (
     workspace_for,
 )
 from splitagent.tools.base import Tool, ToolContext
+
+# A token that looks like a host, URL or IP inside a shell command.
+_URL_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*://")
+_HOST_HINT_RE = re.compile(r"[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
+_SCP_RE = re.compile(r"^[^@/]+@([A-Za-z0-9.-]+):")
+
+
+def _scope_hosts_from_argv(argv: list[str]) -> list[str]:
+    """Best-effort extraction of network destinations from a command line.
+
+    run_tool/install_tool shell out, so a tool can reach hosts the higher-level
+    probes already validate. We pull out anything URL-, host- or IP-shaped and
+    let ``check_scope`` decide. A token that is clearly a local flag or file is
+    skipped so ordinary invocations are not blocked.
+    """
+    found: list[str] = []
+    for raw in argv:
+        token = str(raw).strip().strip("\"'")
+        if not token or token.startswith("-"):
+            continue
+        if _URL_RE.match(token):
+            found.append(token)
+            continue
+        # git remotes: git@host:path or user@host:path
+        scp = _SCP_RE.match(token)
+        if scp:
+            found.append(scp.group(1))
+            continue
+        if "/" in token or "\\" in token or token.startswith("."):
+            continue
+        try:
+            ipaddress.ip_address(token)
+            found.append(token)
+            continue
+        except ValueError:
+            pass
+        if _HOST_HINT_RE.fullmatch(token):
+            found.append(token)
+    return found
+
+
+def _enforce_scope(ctx: ToolContext, argv: list[str]) -> None:
+    """Raise ScopeError if the command targets a host outside the scope."""
+    for host in _scope_hosts_from_argv(argv):
+        ctx.check_scope(host)
 
 
 def _workspace(ctx: ToolContext):
@@ -92,6 +139,8 @@ def _install_tool(ctx: ToolContext, manager: str, package: str) -> dict[str, Any
         return {"error": "workspace is not configured"}
     if not workspace.config.allow_install:
         return {"error": "tool installation is disabled by the operator"}
+    # Installing from a remote can reach a host outside the authorized scope.
+    _enforce_scope(ctx, str(package).split())
 
     toolbox = _toolbox(ctx)
     if toolbox is not None:
@@ -116,6 +165,8 @@ def _run_command(
     if not workspace.config.allow_external_tools:
         return {"error": "running external tools is disabled by the operator"}
     command = [str(a) for a in argv]
+    # run_tool shells out, so enforce the same scope every network probe obeys.
+    _enforce_scope(ctx, command)
 
     toolbox = _toolbox(ctx)
     if toolbox is not None:

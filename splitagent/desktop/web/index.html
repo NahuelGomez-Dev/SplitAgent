@@ -129,15 +129,14 @@
           </div>
 
           <div class="composer">
-            <div class="composer-card">
-              <textarea id="objective" rows="1"
-                placeholder="Objective — e.g. audit the login and search flows of the target"></textarea>
+            <div class="composer-card audit-bar">
               <div class="composer-bar">
                 <button class="pill model-trigger" id="model-pill" title="Choose model">
                   <span class="dot" id="pill-dot"></span>
                   <span id="pill-model">configure model</span>
                   <svg viewBox="0 0 12 12" class="chev"><path d="M3 5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
                 </button>
+                <button class="btn ghost" id="btn-objective" title="What the audit is trying to achieve (set from the plan)">Objective: —</button>
                 <div class="spacer"></div>
                 <span class="dev-only-inline">
                   <label class="chip" title="Run in a disposable Docker container">
@@ -148,7 +147,8 @@
                     <input type="number" id="opt-rounds" min="1" max="10" value="3" />
                   </label>
                 </span>
-                <button class="btn ghost" id="btn-guided">Guided</button>
+                <button class="btn ghost" id="btn-guided">New audit</button>
+                <button class="btn ghost" id="btn-plan-chat" title="Plan and ask the planner">Plan chat</button>
                 <button class="btn primary" id="btn-run">Run audit</button>
                 <button class="btn danger hidden" id="btn-stop">Stop</button>
               </div>
@@ -164,13 +164,14 @@
                 <svg viewBox="0 0 24 24"><path d="M3.5 5.5h17v10h-9l-4.5 4v-4H3.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
               </div>
               <h1>Pentest copilot</h1>
-              <p>Ask anything: plan an engagement, explain a vulnerability, inspect the
-                 target with tools, draft payloads, patches or report text.</p>
+              <p>Let's talk about the engagement first. Tell me what you want to test
+                 and what matters, and I'll propose a plan. Nothing runs until you
+                 approve it.</p>
               <div class="suggestions">
-                <button class="suggestion">Plan a web app pentest for my target</button>
-                <button class="suggestion">What should I test first and why?</button>
-                <button class="suggestion">Scan the target and summarise the attack surface</button>
-                <button class="suggestion">Explain CVSS and score my findings</button>
+                <button class="suggestion">I want to test my web app — where do we start?</button>
+                <button class="suggestion">Help me scope a pentest for my target</button>
+                <button class="suggestion">What should I consider before testing?</button>
+                <button class="suggestion">Explain CVSS and how you score findings</button>
               </div>
             </div>
           </div>
@@ -200,6 +201,7 @@
       <aside class="review">
         <div class="review-tabs" id="review-tabs">
           <button class="rtab active" data-tab="dashboard">Dashboard</button>
+          <button class="rtab" data-tab="plan">Plan chat</button>
           <button class="rtab" data-tab="findings">Findings <span class="count" id="count-findings">0</span></button>
           <button class="rtab" data-tab="mitigations">Mitigations <span class="count" id="count-mitigations">0</span></button>
           <button class="rtab" data-tab="report">Report</button>
@@ -209,6 +211,15 @@
         <div class="review-body">
           <div class="rpanel active" id="panel-dashboard">
             <div class="panel-empty">Run an audit to see the results here.</div>
+          </div>
+          <div class="rpanel" id="panel-plan">
+            <div class="plan-chat-log" id="plan-chat-log">
+              <div class="panel-empty">Talk to the planner about the plan here. It only plans — it never tests.</div>
+            </div>
+            <div class="plan-chat-row">
+              <input id="plan-chat-input" placeholder="Ask about the plan or the environment…" />
+              <button class="mini-btn accent" id="plan-chat-send">Send</button>
+            </div>
           </div>
           <div class="rpanel" id="panel-findings">
             <div class="panel-empty">No findings yet.</div>
@@ -281,7 +292,7 @@
         <button class="icon-btn" data-close>✕</button>
       </div>
       <div class="wizard-progress" id="wiz-progress">
-        <span class="wdot active"></span><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span>
+        <span class="wdot active"></span><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span>
       </div>
       <div class="wizard-body">
         <!-- Step 0: kind -->
@@ -397,6 +408,63 @@
           </label>
         </div>
         <div class="wiz-summary" id="wiz-summary"></div>
+        </section>
+
+        <!-- Step 5: brief (all optional) -->
+        <section class="wstep" data-step="5">
+          <p class="wiz-note">All optional. The more context you give, the better the
+            plan the planner proposes for this specific environment.</p>
+          <div class="scope-doc-row">
+            <button class="mini-btn accent" id="wiz-scope-upload">Upload scope document</button>
+            <span class="scope-doc-name" id="wiz-scope-name">No document attached.</span>
+            <button class="mini-btn ghostish hidden" id="wiz-scope-clear">Remove</button>
+          </div>
+          <div class="form-grid">
+            <label class="field span2">
+              <span>What matters most? (crown jewels)</span>
+              <input id="wiz-crown" placeholder="login & SSO, payments, admin panel, customer PII…" />
+            </label>
+            <label class="field">
+              <span>Engagement goal</span>
+              <select id="wiz-goal">
+                <option value="">full audit</option>
+                <option value="focused area">focused area</option>
+                <option value="compliance evidence">compliance evidence</option>
+                <option value="retest">retest</option>
+                <option value="research">research</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Noise profile</span>
+              <select id="wiz-noise">
+                <option value="normal">normal</option>
+                <option value="stealth">stealth</option>
+                <option value="aggressive">aggressive</option>
+              </select>
+            </label>
+            <label class="field span2">
+              <span>Areas / endpoints to exclude (optional)</span>
+              <input id="wiz-areas-exclude" placeholder="/billing/checkout, /admin/delete-*" />
+            </label>
+            <label class="field span2">
+              <span>Window / rate constraints (optional)</span>
+              <input id="wiz-window" placeholder="only after 20:00, max 5 req/s, avoid weekends" />
+            </label>
+            <label class="field span2">
+              <span>Authorization reference (optional)</span>
+              <input id="wiz-authorization" placeholder="ticket SEC-1234, signed SOW 2026-05" />
+            </label>
+            <label class="field span2">
+              <span>Additional notes for the planner (optional)</span>
+              <textarea id="wiz-notes" rows="3" placeholder="Legacy Windows host, WAF in front, staging only…"></textarea>
+            </label>
+          </div>
+          <div class="brief-refine">
+            <div class="brief-refine-head">
+              <span>Need to clarify something? Open the planner chat — it only plans, it never tests.</span>
+            </div>
+            <button class="mini-btn accent" id="wiz-open-planner">Open planner chat</button>
+          </div>
         </section>
       </div>
       <div class="wizard-foot">

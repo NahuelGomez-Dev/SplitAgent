@@ -61,6 +61,35 @@ def test_scope_enforcement(tmp_path):
         ctx.check_scope("http://evil.example.com")
 
 
+def test_out_of_scope_is_enforced(tmp_path):
+    target = TargetConfig(
+        url="http://localhost",
+        scope=["localhost", "admin.localhost"],
+        out_of_scope=["admin.localhost"],
+    )
+    ctx = SharedContext.create(target="http://localhost", bus=EventBus(), directory=tmp_path)
+    tool_ctx = ToolContext(target=target, run=RunConfig(), context=ctx)
+    # In scope, but explicitly excluded.
+    with pytest.raises(ScopeError):
+        tool_ctx.check_scope("http://admin.localhost/panel")
+    # Excluded hosts are removed from allowed_hosts too.
+    assert "admin.localhost" not in tool_ctx.allowed_hosts()
+    # A normal in-scope host still passes.
+    tool_ctx.check_scope("http://localhost/")
+
+
+def test_out_of_scope_wins_even_with_allow_network(tmp_path):
+    target = TargetConfig(
+        url="http://example.com",
+        scope=["example.com"],
+        out_of_scope=["blocked.example.com"],
+    )
+    ctx = SharedContext.create(target="http://example.com", bus=EventBus(), directory=tmp_path)
+    tool_ctx = ToolContext(target=target, run=RunConfig(allow_network=True), context=ctx)
+    with pytest.raises(ScopeError):
+        tool_ctx.check_scope("blocked.example.com")
+
+
 async def test_headers_audit(tmp_path, web_server):
     ctx = _context(tmp_path, web_server)
     result = await headers_audit(ctx, web_server)

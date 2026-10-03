@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import shutil
 import sys
 import time
@@ -31,6 +32,17 @@ from typing import Any
 
 from splitagent.config import ExecutionConfig
 from splitagent.core import proc
+
+# Shapes accepted for model-supplied package names. They are always passed as
+# argv to sh -lc ("$1") and never interpolated, so these are defence in depth
+# against anything that would still be meaningful to the package manager.
+_SAFE_PACKAGE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")
+_SAFE_PIP_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*(==[A-Za-z0-9._+-]+)?")
+_SAFE_GO_RE = re.compile(r"[A-Za-z0-9._/-]+@(latest|v?[A-Za-z0-9._-]+)")
+_SAFE_NPM_RE = re.compile(r"@?[A-Za-z0-9][A-Za-z0-9._/-]*")
+_SAFE_GIT_URL_RE = re.compile(
+    r"(https?://[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+|git@[A-Za-z0-9._-]+:[A-Za-z0-9._/-]+)"
+)
 
 DOCKERFILE = Path(__file__).resolve().parents[2] / "docker" / "toolbox.Dockerfile"
 
@@ -377,21 +389,44 @@ class Toolbox:
         if not self.config.allow_install:
             return {"ok": False, "error": "installation is disabled in the toolbox"}
 
+        # Packages are model-controlled strings. They are passed as positional
+        # arguments to sh -lc ("$1"), never interpolated, so shell metacharacters
+        # cannot break out. Each manager additionally validates the shape it
+        # expects (a requirement spec, a module path, or a git URL/repo).
         if manager in ("apt", "apt-get"):
-            script = f"apt-get update -qq && apt-get install -y --no-install-recommends {package}"
+            if not _SAFE_PACKAGE_RE.fullmatch(package):
+                return {"ok": False, "error": f"unsafe package name: {package!r}"}
+            script = 'apt-get update -qq && apt-get install -y --no-install-recommends "$1"'
         elif manager == "pip":
-            script = f"/opt/venv/bin/pip install --no-cache-dir {package} 2>/dev/null || pip install --break-system-packages --no-cache-dir {package}"
+            if not _SAFE_PIP_RE.fullmatch(package):
+                return {"ok": False, "error": f"unsafe pip requirement: {package!r}"}
+            script = (
+                '/opt/venv/bin/pip install --no-cache-dir "$1" 2>/dev/null || '
+                'pip install --break-system-packages --no-cache-dir "$1"'
+            )
         elif manager == "pipx":
-            script = f"pipx install {package}"
+            if not _SAFE_PIP_RE.fullmatch(package):
+                return {"ok": False, "error": f"unsafe pipx requirement: {package!r}"}
+            script = 'pipx install "$1"'
         elif manager == "go":
-            script = f"GOBIN=/workspace/tools/bin go install {package}"
+            if not _SAFE_GO_RE.fullmatch(package):
+                return {"ok": False, "error": f"unsafe go module path: {package!r}"}
+            script = 'GOBIN=/workspace/tools/bin go install "$1"'
         elif manager == "npm":
-            script = f"npm install -g --no-audit --no-fund {package}"
+            if not _SAFE_NPM_RE.fullmatch(package):
+                return {"ok": False, "error": f"unsafe npm package: {package!r}"}
+            script = 'npm install -g --no-audit --no-fund "$1"'
         elif manager == "cargo":
-            script = f"cargo install {package}"
+            if not _SAFE_PACKAGE_RE.fullmatch(package):
+                return {"ok": False, "error": f"unsafe crate name: {package!r}"}
+            script = 'cargo install "$1"'
         elif manager == "git":
+            if not _SAFE_GIT_URL_RE.fullmatch(package):
+                return {"ok": False, "error": f"unsafe git remote: {package!r}"}
             name = package.rstrip("/").split("/")[-1].replace(".git", "")
-            script = f"git clone --depth 1 {package} /workspace/tools/{name}"
+            if not _SAFE_PACKAGE_RE.fullmatch(name):
+                name = "repo"
+            script = 'git clone --depth 1 "$1" "/workspace/tools/$2"'
         else:
             return {
                 "ok": False,
@@ -399,18 +434,35 @@ class Toolbox:
                 "supported": ["apt", "pip", "pipx", "go", "npm", "cargo", "git"],
             }
 
-        result = self.exec_shell(script, timeout=timeout)
-        result.update({"manager": manager, "package": package})
+        if manager == "git":
+            args = ["sh", "-lc", script, "--", package, name]
+        else:
+            args = ["sh", "-lc", script, "--", package]
+        code, out, err = self._run("exec", self.config.container, *args, timeout=timeout)
+        output = (out + "\n" + err).strip()
+        result = {
+            "ok": code == 0,
+            "command": " ".join(args),
+            "exit_code": code,
+            "output": output[-8000:],
+            "where": "toolbox",
+            "manager": manager,
+            "package": package,
+        }
         return result
 
     def which(self, name: str) -> str | None:
         """Resolve a binary inside the running container."""
+        if not _SAFE_PACKAGE_RE.fullmatch(name or ""):
+            return None
         _code, out, _ = self._run(
             "exec",
             self.config.container,
             "sh",
             "-lc",
-            f"command -v {name} || true",
+            'command -v "$1" || true',
+            "--",
+            name,
             timeout=20,
         )
         path = out.strip().splitlines()[-1] if out.strip() else ""

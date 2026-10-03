@@ -114,6 +114,47 @@ def test_build_json_metrics():
     assert '"severity_counts"' in payload
 
 
+def test_report_filename_is_sanitised(tmp_path):
+    from splitagent.report.generator import safe_stem
+
+    assert "/" not in safe_stem("../evil/name")
+    assert "\\" not in safe_stem("..\\..\\windows")
+    assert safe_stem("") == "report"
+    assert safe_stem("a" * 200) == "a" * 80
+
+
+def test_write_reports_cannot_escape_the_directory(tmp_path):
+    from splitagent.report.generator import write_reports
+
+    state = _state()
+    state.name = "../../escape"
+    paths = write_reports(state, ReportSettings(formats=["json"]), tmp_path)
+    assert len(paths) == 1
+    assert paths[0].parent == tmp_path.resolve()
+    assert "escape" not in paths[0].name or ".." not in paths[0].name
+
+
+def test_malformed_session_degrades_instead_of_crashing():
+    from splitagent.core.models import SessionState
+
+    # A corrupt session: wrong types where the report expects numbers.
+    state = SessionState.from_dict(
+        {
+            "findings": [
+                {"title": "x", "cvss_score": "not-a-number", "round": "nope"},
+                "this-is-not-a-dict",
+            ],
+            "rounds": [{"index": "bad"}, 42],
+            "mitigations": [{"finding_id": "f", "round": None}],
+        }
+    )
+    assert state.findings[0].cvss_score == 0.0
+    assert state.findings[0].round == 0
+    # Rendering must not raise.
+    html = build_html(state, ReportSettings(), generated_at=FIXED_TIME)
+    assert "<!doctype html>" in html
+
+
 def test_write_reports(tmp_path):
     settings = ReportSettings(formats=["markdown", "html", "json"])
     paths = write_reports(_state(), settings, tmp_path)

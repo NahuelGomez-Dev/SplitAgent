@@ -234,8 +234,8 @@ def cmd_config(args: argparse.Namespace) -> int:
         table = Table(title="Global configuration", border_style=t.BORDER)
         table.add_column("Key", style=t.PRIMARY)
         table.add_column("Value", style=t.TEXT)
-        for key, value in config.llm.redacted().items():
-            table.add_row(f"llm.{key}", str(value))
+        for key, current in config.llm.redacted().items():
+            table.add_row(f"llm.{key}", str(current))
         table.add_row("authorized", str(config.authorized))
         console.print(table)
         console.print(Text(f"File: {global_config_path()}", style=t.MUTED))
@@ -250,6 +250,7 @@ def cmd_config(args: argparse.Namespace) -> int:
             value = float(args.value)
         elif args.key in ("max_tokens", "timeout"):
             value = int(args.value)
+        # (value stays a str for the remaining keys)
         elif args.key in ("stream",):
             value = args.value.lower() in ("1", "true", "yes", "on")
         setattr(config.llm, args.key, value)
@@ -406,7 +407,11 @@ def cmd_report(args: argparse.Namespace) -> int:
         project.report.formats = args.formats
     if args.output:
         project.report.output_dir = args.output
-    paths = write_reports(context.state, project.report, Path(project.report.output_dir))
+    try:
+        paths = write_reports(context.state, project.report, Path(project.report.output_dir))
+    except (OSError, ValueError) as exc:
+        console.print(f"[{t.RED}]Could not write report: {exc}[/]")
+        return 1
     for path in paths:
         console.print(f"[{t.GREEN}]report[/] {path}")
     console.print(
@@ -663,7 +668,7 @@ def _force_utf8() -> None:
     """
     for stream in (sys.stdout, sys.stderr):
         try:
-            stream.reconfigure(encoding="utf-8", errors="replace")
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
         except (AttributeError, ValueError):  # pragma: no cover
             pass
     if os.name == "nt":  # pragma: no cover - platform specific

@@ -53,6 +53,15 @@ async def test_encrypted_roundtrip(isolated_home, tmp_path):
     assert loaded.state.target == "http://example.test"
 
 
+def test_load_rejects_a_traversal_session_id(isolated_home, tmp_path):
+    from splitagent.errors import ConfigError
+
+    with pytest.raises(ConfigError):
+        SharedContext.load("../../etc/passwd", directory=tmp_path)
+    with pytest.raises(ConfigError):
+        SharedContext.load("..\\..\\windows", directory=tmp_path)
+
+
 async def test_duplicate_findings_are_merged(isolated_home, tmp_path):
     """Re-testing the same issue across rounds must not duplicate the report."""
     ctx = SharedContext.create(target="http://t", bus=EventBus(), directory=tmp_path / "sessions")
